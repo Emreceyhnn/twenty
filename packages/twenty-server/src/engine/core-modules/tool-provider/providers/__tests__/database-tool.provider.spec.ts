@@ -162,6 +162,7 @@ describe('DatabaseToolProvider', () => {
           intersectionOf: { agentRoleId: roleId },
         },
         explicitObjectGrants: options?.explicitObjectGrants,
+        authPrincipalVariant: undefined,
       },
       { includeSchemas: false },
     )) as (ToolIndexEntry | ToolDescriptor)[];
