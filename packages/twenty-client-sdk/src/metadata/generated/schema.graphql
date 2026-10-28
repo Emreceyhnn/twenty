@@ -1457,6 +1457,7 @@ input CreateAgentChatChannelInput {
   icon: String
   name: String!
   roleIds: [UUID!]! = []
+  universalIdentifier: UUID
 }
 
 input CreateAgentInput {
