@@ -85,7 +85,7 @@ export class AgentChatChannelGrantService {
       await replaceAgentChatChannelRuleGrants({
         manager,
         workspaceId,
-        scope: { channelId },
+        scope: { channelIds: [channelId] },
       });
     });
   }
