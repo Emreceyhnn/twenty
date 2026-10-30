@@ -1002,7 +1002,7 @@ export default {
             "packageJsonFileId": [
                 534
             ],
-            "runOnUserPreferences": [
+            "runHealthCheckOnUserPreferences": [
                 4
             ],
             "settingsCustomTabFrontComponentId": [
@@ -1502,9 +1502,6 @@ export default {
             ],
             "connectionProviders": [
                 51
-            ],
-            "hasUserHealthCheck": [
-                4
             ],
             "settingsMenuItems": [
                 493
