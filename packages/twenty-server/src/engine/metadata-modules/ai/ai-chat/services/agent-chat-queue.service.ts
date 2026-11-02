@@ -3,7 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 
 import { FileFolder } from 'twenty-shared/types';
-import { isNonEmptyArray } from 'twenty-shared/utils';
+import { isDefined, isNonEmptyArray } from 'twenty-shared/utils';
 import { In, Like } from 'typeorm';
 
 import { FileEntity } from 'src/engine/core-modules/file/entities/file.entity';
@@ -21,6 +21,10 @@ import { AgentMessageWorkspaceEntity } from 'src/engine/metadata-modules/ai/ai-h
 import { AgentTurnWorkspaceEntity } from 'src/engine/metadata-modules/ai/ai-history/standard-objects/agent-turn.workspace-entity';
 import { InjectWorkspaceScopedRepository } from 'src/engine/twenty-orm/workspace-scoped-repository/inject-workspace-scoped-repository.decorator';
 import { WorkspaceScopedRepository } from 'src/engine/twenty-orm/workspace-scoped-repository/workspace-scoped-repository';
+import { DirectMessageFileAccessService } from 'src/engine/permissions/direct-message/services/direct-message-file-access.service';
+import { UserWorkspaceAuthContextService } from 'src/engine/core-modules/user-workspace/services/user-workspace-auth-context.service';
+import { isUserAuthContext } from 'src/engine/core-modules/auth/guards/is-user-auth-context.guard';
+import { workspaceAuthContextStorage } from 'src/engine/core-modules/auth/storage/workspace-auth-context.storage';
 
 @Injectable()
 export class AgentChatQueueService {
@@ -34,6 +38,8 @@ export class AgentChatQueueService {
     private readonly conversationWriterService: AgentConversationWriterService,
     private readonly threadService: AgentChatThreadService,
     private readonly participantService: AgentChatThreadParticipantService,
+    private readonly directMessageFileAccessService: DirectMessageFileAccessService,
+    private readonly userWorkspaceAuthContextService: UserWorkspaceAuthContextService,
   ) {}
 
   async queueMessage({
@@ -66,6 +72,26 @@ export class AgentChatQueueService {
         userWorkspaceId,
       }),
     };
+
+    if (isNonEmptyArray(fileAttachments)) {
+      const storedAuthContext = workspaceAuthContextStorage.getStore();
+      const hasMatchingUserContext =
+        isDefined(storedAuthContext) &&
+        isUserAuthContext(storedAuthContext) &&
+        storedAuthContext.workspace.id === workspaceId &&
+        storedAuthContext.workspaceMemberId === workspaceMemberId;
+
+      await this.directMessageFileAccessService.assertFilesReadableOrThrow({
+        workspaceId,
+        fileIds: fileAttachments.map(({ id }) => id),
+        authContext: hasMatchingUserContext
+          ? storedAuthContext
+          : await this.userWorkspaceAuthContextService.resolveWorkspaceMember({
+              workspaceId,
+              workspaceMemberId,
+            }),
+      });
+    }
 
     const validFiles = isNonEmptyArray(fileAttachments)
       ? await this.fileRepository.find(workspaceId, {

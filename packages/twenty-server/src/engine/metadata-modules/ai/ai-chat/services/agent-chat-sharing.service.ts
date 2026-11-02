@@ -28,6 +28,7 @@ import { buildRecordShareLockKey } from 'src/engine/permissions/record-share/uti
 import { RecordShareException } from 'src/engine/permissions/record-share/record-share.exception';
 import { RecordShareStorageService } from 'src/engine/permissions/record-share/services/record-share-storage.service';
 import { RecordAccessPolicyService } from 'src/engine/permissions/combine/services/record-access-policy.service';
+import { isWorkspaceMemberInDirectMessagePair } from 'src/engine/permissions/direct-message/utils/is-workspace-member-in-direct-message-pair.util';
 import { RecordSharePrincipalService } from 'src/engine/permissions/record-share/services/record-share-principal.service';
 import { RecordSharingService } from 'src/engine/permissions/record-share/services/record-sharing.service';
 import { resolveRecordIdsSharedWithPrincipals } from 'src/engine/permissions/record-share/utils/resolve-record-ids-shared-with-principals.util';
@@ -226,11 +227,27 @@ export class AgentChatSharingService {
   }: AgentChatThreadAccessArgs & {
     memberIds: string[];
   }): Promise<string[]> {
-    const chatMemberIds = await this.filterMemberIds(memberIds, (memberId) =>
-      this.getAuthContext({
-        workspaceId: args.workspaceId,
-        workspaceMemberId: memberId,
-      }).then(() => true),
+    const thread = await this.threadRepository.findOne(args.workspaceId, {
+      where: { id: args.threadId },
+    });
+
+    if (!isDefined(thread)) {
+      return throwAgentChatThreadNotFound();
+    }
+
+    const pairMemberIds = memberIds.filter((workspaceMemberId) =>
+      isWorkspaceMemberInDirectMessagePair({
+        directMessagePair: thread,
+        workspaceMemberId,
+      }),
+    );
+    const chatMemberIds = await this.filterMemberIds(
+      pairMemberIds,
+      (memberId) =>
+        this.getAuthContext({
+          workspaceId: args.workspaceId,
+          workspaceMemberId: memberId,
+        }).then(() => true),
     );
 
     if (chatMemberIds.length === 0) {

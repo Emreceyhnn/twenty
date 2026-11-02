@@ -3,11 +3,17 @@
 import { Injectable } from '@nestjs/common';
 
 import { msg } from '@lingui/core/macro';
+import { doNotTranslate } from 'twenty-shared/i18n';
+import { STANDARD_OBJECTS } from 'twenty-shared/metadata';
 import { RecordSharePrincipalType } from 'twenty-shared/types';
-import { isDefined } from 'twenty-shared/utils';
+import { isDefined, isNonEmptyArray } from 'twenty-shared/utils';
 
 import { RecordAccessPolicyService } from 'src/engine/permissions/combine/services/record-access-policy.service';
 import { type PermissionsPrincipalsWithRolesContext } from 'src/engine/permissions/principal/types/permissions-principals-with-roles-context.type';
+import { type AgentChatThreadWorkspaceEntity } from 'src/engine/metadata-modules/ai/ai-history/standard-objects/agent-chat-thread.workspace-entity';
+import { findDirectMessagePermissionObject } from 'src/engine/permissions/direct-message/utils/find-direct-message-permission-object.util';
+import { findDirectMessageThreadPairs } from 'src/engine/permissions/direct-message/utils/find-direct-message-thread-pairs.util';
+import { isWorkspaceMemberInDirectMessagePair } from 'src/engine/permissions/direct-message/utils/is-workspace-member-in-direct-message-pair.util';
 import { isRolePermittingOperation } from 'src/engine/permissions/role/utils/is-role-permitting-operation.util';
 import {
   RecordShareException,
@@ -92,6 +98,14 @@ export class RecordSharePrincipalService {
     principals: RecordSharePrincipal[];
     recordIds: string[];
   }): Promise<void> {
+    await this.assertDirectMessagePrincipalsOrThrow({
+      workspaceId,
+      transactionScope,
+      flatObjectMetadata,
+      principals,
+      recordIds,
+    });
+
     const namedPrincipals = principals.filter(
       (principal) =>
         principal.principalType !== RecordSharePrincipalType.EVERYONE,
@@ -174,6 +188,81 @@ export class RecordSharePrincipalService {
           RecordShareExceptionCode.INVALID_SHARE_WITH,
           {
             userFriendlyMessage: msg`Their role cannot see this record, and this object is only shared with people who can.`,
+          },
+        );
+      }
+    }
+  }
+
+  private async assertDirectMessagePrincipalsOrThrow({
+    workspaceId,
+    transactionScope,
+    flatObjectMetadata,
+    principals,
+    recordIds,
+  }: {
+    workspaceId: string;
+    transactionScope: WorkspaceTransactionScope;
+    flatObjectMetadata: FlatObjectMetadata;
+    principals: RecordSharePrincipal[];
+    recordIds: string[];
+  }): Promise<void> {
+    if (
+      flatObjectMetadata.universalIdentifier !==
+        STANDARD_OBJECTS.agentChatThread.universalIdentifier ||
+      !isNonEmptyArray(principals) ||
+      !isNonEmptyArray(recordIds)
+    ) {
+      return;
+    }
+
+    const metadataMaps =
+      await this.recordAccessPolicyService.loadPermissionsMetadataMaps(
+        workspaceId,
+      );
+
+    if (
+      findDirectMessagePermissionObject({
+        metadataMaps,
+        flatObjectMetadata,
+      }) !== 'agentChatThread'
+    ) {
+      return;
+    }
+
+    const directMessagePairs = await findDirectMessageThreadPairs({
+      repository:
+        transactionScope.getRepository<AgentChatThreadWorkspaceEntity>(
+          'agentChatThread',
+          { shouldBypassPermissionChecks: true },
+        ),
+      metadataMaps,
+      threadIds: recordIds,
+    });
+
+    for (const directMessagePair of directMessagePairs.values()) {
+      for (const principal of principals) {
+        const workspaceMemberId =
+          principal.principalType === RecordSharePrincipalType.WORKSPACE_MEMBER
+            ? principal.principalId
+            : undefined;
+
+        if (
+          isWorkspaceMemberInDirectMessagePair({
+            directMessagePair,
+            workspaceMemberId,
+          })
+        ) {
+          continue;
+        }
+
+        throw new RecordShareException(
+          doNotTranslate(
+            'Direct messages cannot be shared outside their member pair',
+          ),
+          RecordShareExceptionCode.INVALID_SHARE_WITH,
+          {
+            userFriendlyMessage: msg`Direct messages can only be shared with their two members.`,
           },
         );
       }

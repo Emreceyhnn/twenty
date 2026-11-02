@@ -52,6 +52,7 @@ import { MessagePruningService } from 'src/engine/metadata-modules/ai/ai-chat/se
 import { SystemPromptBuilderService } from 'src/engine/metadata-modules/ai/ai-chat/services/system-prompt-builder.service';
 import { AgentInboxThreadResolver } from 'src/engine/metadata-modules/ai/ai-chat/resolvers/agent-inbox-thread.resolver';
 import { AgentInboxAccessService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-inbox-access.service';
+import { DirectMessageFileAccessModule } from 'src/engine/permissions/direct-message/direct-message-file-access.module';
 
 @Module({
   imports: [
@@ -75,6 +76,7 @@ import { AgentInboxAccessService } from 'src/engine/metadata-modules/ai/ai-chat/
     ToolProviderModule,
     DashboardToolsModule,
     AiFrontComponentModule,
+    DirectMessageFileAccessModule,
   ],
   providers: [
     AgentChatActorService,

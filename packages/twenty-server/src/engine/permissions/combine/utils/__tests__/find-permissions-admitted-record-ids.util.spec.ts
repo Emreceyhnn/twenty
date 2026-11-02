@@ -138,6 +138,9 @@ const buildContext = (): RowAccessEvaluationContext => ({
     ),
   ),
   findPrivateRecordStates: jest.fn(async () => privateRecordStates),
+  findDirectMessageThreadPairs: jest.fn(async () => new Map()),
+  findAgentChatMessageThreadIds: jest.fn(async () => new Map()),
+  findAdmittedDirectMessageThreadIds: jest.fn(async () => new Set<string>()),
 });
 
 const findAdmitted = ({

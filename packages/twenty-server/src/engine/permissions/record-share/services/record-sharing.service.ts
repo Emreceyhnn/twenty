@@ -2,6 +2,10 @@ import { buildRecordShareLockKey } from 'src/engine/permissions/record-share/uti
 import { computeObjectTargetTable } from 'src/engine/utils/compute-object-target-table.util';
 import { Injectable } from '@nestjs/common';
 
+import { msg } from '@lingui/core/macro';
+import { doNotTranslate } from 'twenty-shared/i18n';
+import { STANDARD_OBJECTS } from 'twenty-shared/metadata';
+
 import {
   RecordShareAccessLevel,
   RecordSharePrincipalType,
@@ -10,6 +14,15 @@ import {
 import { isDefined } from 'twenty-shared/utils';
 
 import { type UserWorkspaceAuthContext } from 'src/engine/core-modules/auth/types/workspace-auth-context.type';
+import { type PermissionsMetadataMaps } from 'src/engine/permissions/combine/types/row-access-policy.type';
+import { type AgentChatThreadWorkspaceEntity } from 'src/engine/metadata-modules/ai/ai-history/standard-objects/agent-chat-thread.workspace-entity';
+import { findDirectMessagePermissionObject } from 'src/engine/permissions/direct-message/utils/find-direct-message-permission-object.util';
+import { findDirectMessageThreadPairs } from 'src/engine/permissions/direct-message/utils/find-direct-message-thread-pairs.util';
+import { hasDirectMessageThreadIdentity } from 'src/engine/permissions/direct-message/utils/has-direct-message-thread-identity.util';
+import {
+  RecordShareException,
+  RecordShareExceptionCode,
+} from 'src/engine/permissions/record-share/record-share.exception';
 import { NotFoundError } from 'src/engine/core-modules/graphql/utils/graphql-errors.util';
 import {
   type RecordSharePrincipalInput,
@@ -264,6 +277,14 @@ export class RecordSharingService {
       assertPrivateRecordEnabledOrThrow(featureFlagsMap);
     }
 
+    await this.assertDirectMessagePrivacyOrThrow({
+      transactionScope,
+      flatObjectMetadata,
+      recordId: args.recordId,
+      isPrivate,
+      metadataMaps: { featureFlagsMap, flatFieldMetadataMaps },
+    });
+
     await this.privateRecordStorageService.setPrivate({
       workspaceId,
       flatObjectMetadata,
@@ -325,6 +346,59 @@ export class RecordSharingService {
         },
       ],
     });
+  }
+
+  private async assertDirectMessagePrivacyOrThrow({
+    transactionScope,
+    flatObjectMetadata,
+    recordId,
+    isPrivate,
+    metadataMaps,
+  }: {
+    transactionScope: WorkspaceTransactionScope;
+    flatObjectMetadata: FlatObjectMetadata;
+    recordId: string;
+    isPrivate: boolean;
+    metadataMaps: Pick<
+      PermissionsMetadataMaps,
+      'featureFlagsMap' | 'flatFieldMetadataMaps'
+    >;
+  }): Promise<void> {
+    if (
+      isPrivate ||
+      flatObjectMetadata.universalIdentifier !==
+        STANDARD_OBJECTS.agentChatThread.universalIdentifier ||
+      findDirectMessagePermissionObject({
+        metadataMaps,
+        flatObjectMetadata,
+      }) !== 'agentChatThread'
+    ) {
+      return;
+    }
+
+    const directMessagePairs = await findDirectMessageThreadPairs({
+      repository:
+        transactionScope.getRepository<AgentChatThreadWorkspaceEntity>(
+          'agentChatThread',
+          { shouldBypassPermissionChecks: true },
+        ),
+      metadataMaps,
+      threadIds: [recordId],
+    });
+    const directMessagePair = directMessagePairs.get(recordId);
+
+    if (
+      !isDefined(directMessagePair) ||
+      !hasDirectMessageThreadIdentity(directMessagePair)
+    ) {
+      return;
+    }
+
+    throw new RecordShareException(
+      doNotTranslate('Direct messages must remain private'),
+      RecordShareExceptionCode.INVALID_SHARE_WITH,
+      { userFriendlyMessage: msg`Direct messages must remain private.` },
+    );
   }
 
   private async buildSharingResponse({

@@ -17,6 +17,7 @@ import { type FlatObjectMetadata } from 'src/engine/metadata-modules/flat-object
 import { InjectWorkspaceScopedRepository } from 'src/engine/twenty-orm/workspace-scoped-repository/inject-workspace-scoped-repository.decorator';
 import { WorkspaceScopedRepository } from 'src/engine/twenty-orm/workspace-scoped-repository/workspace-scoped-repository';
 import { resolveEffectiveFlatEntityProperty } from 'src/engine/metadata-modules/overrides/utils/resolve-effective-flat-entity-property.util';
+import { type WorkspaceAuthContext } from 'src/engine/core-modules/auth/types/workspace-auth-context.type';
 
 export type RecordFilesResolution = {
   records: Record<string, unknown>[];
@@ -36,10 +37,12 @@ export class RecordFilesResolverService {
     objectNameSingular,
     records,
     workspaceId,
+    authContext,
   }: {
     objectNameSingular: string;
     records: Record<string, unknown>[];
     workspaceId: string;
+    authContext?: WorkspaceAuthContext;
   }): Promise<RecordFilesResolution> {
     const { flatObjectMetadataMaps, flatFieldMetadataMaps } =
       await this.workspaceManyOrAllFlatEntityMapsCacheService.getOrRecomputeManyOrAllFlatEntityMaps(
@@ -103,6 +106,7 @@ export class RecordFilesResolverService {
               fileId,
               workspaceId,
               fieldMetadataId: filesField.id,
+              authContext,
             });
 
           fileIdSubstitutions.set(fileId, copiedFile.id);

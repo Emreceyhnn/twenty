@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 
+import { doNotTranslate } from 'twenty-shared/i18n';
 import { STANDARD_OBJECTS } from 'twenty-shared/metadata';
-import { isNonEmptyArray } from 'twenty-shared/utils';
+import { FeatureFlagKey } from 'twenty-shared/types';
+import { isDefined, isNonEmptyArray } from 'twenty-shared/utils';
 import { type EntityManager } from 'typeorm';
 
 import { InjectMessageQueue } from 'src/engine/core-modules/message-queue/decorators/message-queue.decorator';
@@ -18,6 +20,7 @@ import { InjectAgentHistoryRepository } from 'src/engine/metadata-modules/ai/ai-
 import { AgentChatThreadWorkspaceEntity } from 'src/engine/metadata-modules/ai/ai-history/standard-objects/agent-chat-thread.workspace-entity';
 import { getWorkspaceSchemaName } from 'src/engine/workspace-datasource/utils/get-workspace-schema-name.util';
 import { escapeIdentifier } from 'src/engine/workspace-manager/workspace-migration/utils/remove-sql-injection.util';
+import { WorkspaceCacheService } from 'src/engine/workspace-cache/services/workspace-cache.service';
 
 type AgentChatChannelGrantScope =
   | { threadIds: string[] }
@@ -31,6 +34,7 @@ export class AgentChatChannelGrantService {
     private readonly threadRepository: AgentHistoryRepository<AgentChatThreadWorkspaceEntity>,
     @InjectMessageQueue(MessageQueue.workspaceQueue)
     private readonly workspaceQueueService: MessageQueueService,
+    private readonly workspaceCacheService: WorkspaceCacheService,
   ) {}
 
   async enqueueChannelGrantsRewrite(
@@ -142,6 +146,8 @@ export class AgentChatChannelGrantService {
       STANDARD_OBJECTS.agentChatThread.universalIdentifier,
       isThreadScope ? scope.threadIds : scope.channelId,
     ];
+    const directMessageGrantCondition =
+      await this.getDirectMessageGrantCondition(workspaceId);
 
     await manager.query(
       `DELETE FROM ${schema}."recordShare" record_share
@@ -157,6 +163,7 @@ export class AgentChatChannelGrantService {
            JOIN (${channelAccessQuery}) channel_access
              ON channel_access.channel_id = thread."channelId"
            WHERE ${threadScopeCondition}
+             ${directMessageGrantCondition}
              AND thread.id = record_share."recordId"
              AND thread."channelId" = record_share."sourceId"
              AND channel_access.role_id = record_share."principalId"
@@ -176,8 +183,51 @@ export class AgentChatChannelGrantService {
          ON thread_object."workspaceId" = $1
          AND thread_object."universalIdentifier" = $2
        WHERE ${threadScopeCondition}
+         ${directMessageGrantCondition}
        ON CONFLICT DO NOTHING`,
       parameters,
     );
+  }
+
+  private async getDirectMessageGrantCondition(
+    workspaceId: string,
+  ): Promise<string> {
+    const { featureFlagsMap, flatFieldMetadataMaps } =
+      await this.workspaceCacheService.getOrRecompute(workspaceId, [
+        'featureFlagsMap',
+        'flatFieldMetadataMaps',
+      ]);
+    const hasConversationType = isDefined(
+      flatFieldMetadataMaps.byUniversalIdentifier[
+        STANDARD_OBJECTS.agentChatThread.fields.conversationType
+          .universalIdentifier
+      ],
+    );
+    const hasDirectMessageIdentityStorage =
+      featureFlagsMap[
+        FeatureFlagKey.IS_AGENT_CHAT_DIRECT_MESSAGE_IDENTITY_ENABLED
+      ] === true;
+
+    return [
+      ...(hasConversationType || hasDirectMessageIdentityStorage
+        ? [
+            doNotTranslate(
+              `thread."conversationType" IS DISTINCT FROM 'DIRECT_MESSAGE'`,
+            ),
+          ]
+        : []),
+      ...(hasDirectMessageIdentityStorage
+        ? [
+            doNotTranslate(
+              'thread."directMessageFirstWorkspaceMemberId" IS NULL',
+            ),
+            doNotTranslate(
+              'thread."directMessageSecondWorkspaceMemberId" IS NULL',
+            ),
+          ]
+        : []),
+    ]
+      .map((condition) => doNotTranslate(`AND ${condition}`))
+      .join(doNotTranslate('\n'));
   }
 }
