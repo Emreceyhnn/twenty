@@ -449,6 +449,7 @@ type Application {
   objects: [Object!]!
   packageJsonChecksum: String
   packageJsonFileId: UUID
+  runOnUserPreferences: Boolean!
   settingsCustomTabFrontComponentId: UUID
   settingsMenuItems: [SettingsMenuItem!]
   universalIdentifier: String!
@@ -663,6 +664,7 @@ type ApplicationMonitoringVersion {
 type ApplicationPreferences {
   applicationId: UUID!
   connectionProviders: [ApplicationConnectionProvider!]!
+  hasUserHealthCheck: Boolean!
   settingsMenuItems: [SettingsMenuItem!]!
   variables: [UserApplicationVariableValue!]!
 }
@@ -1706,6 +1708,7 @@ input CreateRecordExportInput {
 
 input CreateRelatedRecordPathInput {
   firstFieldMetadataId: UUID
+  isInherent: Boolean
   objectMetadataId: UUID
   secondFieldMetadataId: UUID
   thirdFieldMetadataId: UUID
@@ -2311,15 +2314,19 @@ type FeatureFlag {
 }
 
 enum FeatureFlagKey {
+  IS_AI_CHAT_COMPONENT_BUILDER_ENABLED
   IS_AI_CHAT_INBOX_ENABLED
   IS_APP_PREFERENCES_ENABLED
   IS_CALENDAR_EVENT_SHARED_ACROSS_CHANNELS_ENABLED
   IS_CONFIGURABLE_SEARCH_FIELDS_ENABLED
+  IS_GETTING_STARTED_ENABLED
   IS_MCP_SERVERS_ENABLED
+  IS_PRIVATE_RECORD_ENABLED
   IS_RECORD_CREATION_FORM_ENABLED
   IS_RECORD_LEVEL_SHARING_ENABLED
   IS_RELATED_RECORD_PATHS_ENABLED
   IS_REST_METADATA_API_NEW_FORMAT_DIRECT
+  IS_ROW_LEVEL_PERMISSION_RELATION_HOP_ENABLED
 }
 
 type Field {
@@ -2351,7 +2358,6 @@ type Field {
   type: FieldMetadataType!
   universalIdentifier: String!
   updatedAt: DateTime!
-  writability: MetadataWritability
 }
 
 type FieldConfiguration {
@@ -2579,6 +2585,64 @@ type GetAuthorizationUrlForSSO {
 input GetAuthorizationUrlForSSOInput {
   identityProviderId: UUID!
   workspaceInviteHash: String
+}
+
+type GettingStartedProgress {
+  completedStepActionKeys: [GettingStartedStepActionKey!]!
+  isHidden: Boolean!
+  selectedStepActionKey: GettingStartedStepActionKey
+  snoozedUntil: String
+  steps: [GettingStartedStepDefinition!]!
+}
+
+enum GettingStartedStepActionKey {
+  CONNECT_MAILBOX
+  CUSTOMIZE_DATA_MODEL
+  FOLLOW_UP_DEALS
+  HANDOVER_DEALS
+  IMPORT_DATA
+  INSTALL_APP
+  INVITE_TEAM
+}
+
+type GettingStartedStepDefinition {
+  actionKey: GettingStartedStepActionKey!
+  description: String!
+  doneTitle: String!
+  icon: String!
+  iconColor: String!
+  kind: GettingStartedStepKind!
+  prompt: String
+  promptLabel: String
+  title: String!
+}
+
+enum GettingStartedStepKind {
+  CUSTOM
+  PROMPT
+  WORKFLOW
+}
+
+type GettingStartedWorkflow {
+  versionId: String!
+  workflowId: String!
+}
+
+type GettingStartedWorkflowPreview {
+  actions: [GettingStartedWorkflowPreviewAction!]!
+  stepActionKey: GettingStartedStepActionKey!
+  trigger: GettingStartedWorkflowPreviewTrigger!
+}
+
+type GettingStartedWorkflowPreviewAction {
+  title: String!
+  type: WorkflowActionType!
+}
+
+type GettingStartedWorkflowPreviewTrigger {
+  databaseEventAction: String
+  title: String!
+  type: String!
 }
 
 input GrantApplicationCapabilitiesInput {
@@ -3156,14 +3220,6 @@ enum MetadataEventAction {
   UPDATED
 }
 
-enum MetadataReadability {
-  APPLICATION
-  INHERITED
-  OPEN
-  PRIVATE
-  SYSTEM
-}
-
 type MetadataTranslation {
   canonicalValue: String!
   locale: String!
@@ -3195,12 +3251,6 @@ input MetadataTranslationsInput {
   fieldMetadataId: UUID
   locale: String
   objectMetadataId: UUID
-}
-
-enum MetadataWritability {
-  APPLICATION
-  OPEN
-  SYSTEM
 }
 
 type MinimalMetadata {
@@ -3396,6 +3446,7 @@ type Mutation {
   installMarketplaceApp(universalIdentifier: String!, version: String): Boolean! @deprecated(reason: "Use installApplication instead")
   markAgentChatThreadAsDoneInChannel(threadId: UUID!): Boolean!
   moveAgentChatThreadToChannel(channelId: UUID, threadId: UUID!): Boolean!
+  prepareGettingStartedWorkflow(stepActionKey: GettingStartedStepActionKey!): GettingStartedWorkflow!
   refreshEnterpriseValidityToken: Boolean!
   releaseEnterpriseServerBinding: EnterpriseLicenseInfoDTO!
   removeAgentChatMessageReaction(emoji: String!, messageId: UUID!): [AgentMessageReactionSummary!]!
@@ -3422,6 +3473,7 @@ type Mutation {
   rotateApplicationRegistrationClientSecret(id: String!): RotateClientSecret!
   runAgent(input: RunAgentInput!): RunAgentResult!
   runApplicationHealthCheck(applicationId: UUID!): ApplicationHealthCheckResult
+  runMyApplicationHealthCheck(applicationId: UUID!): ApplicationHealthCheckResult
   saveImapSmtpCaldavAccount(connectionParameters: EmailAccountConnectionParameters!, handle: String!, id: UUID): ImapSmtpCaldavConnectionSuccess!
   sendAppChannelMessage(input: SendAppChannelMessageInput!): SendAppChannelMessageOutput!
   sendChatMessage(browsingContext: JSON, channelId: UUID, fileAttachments: [FileAttachmentInput!], mentionedWorkspaceMemberIds: [UUID!], messageId: UUID!, modelId: String, shouldAssistantReply: Boolean, text: String!, threadId: UUID!): SendChatMessageResult!
@@ -3432,7 +3484,7 @@ type Mutation {
   sendMessageCampaignTest(input: SendMessageCampaignTestInput!): SendEmailViaDomainOutput!
   setAppKeyValue(input: SetAppKeyValueInput!): AppKeyValue!
   setEnterpriseKey(enterpriseKey: String!): EnterpriseLicenseInfoDTO!
-  setRecordGeneralAccess(accessLevel: RecordShareAccessLevel!, target: RecordTargetInput!): RecordSharingDTO!
+  setRecordPrivate(isPrivate: Boolean!, target: RecordTargetInput!): RecordSharingDTO!
   setRecordShare(accessLevel: RecordShareAccessLevel!, principal: RecordSharePrincipalInput!, target: RecordTargetInput!): RecordSharingDTO!
   setResourceCreditSubscriptionPrice(priceId: String!): BillingUpdate!
   signIn(captchaToken: String, email: String!, locale: String, password: String!, verifyEmailRedirectPath: String): AvailableWorkspacesAndAccessTokens!
@@ -3471,6 +3523,7 @@ type Mutation {
   updateCommandMenuItem(input: UpdateCommandMenuItemInput!): CommandMenuItem!
   updateEmailGroupChannel(input: UpdateEmailGroupChannelInput!): MessageChannel!
   updateFrontComponent(input: UpdateFrontComponentInput!): FrontComponent!
+  updateGettingStarted(input: UpdateGettingStartedInput!): GettingStartedProgress!
   updateLabPublicFeatureFlag(input: UpdateLabPublicFeatureFlagInput!): FeatureFlag!
   updateManyNavigationMenuItems(inputs: [UpdateOneNavigationMenuItemInput!]!): [NavigationMenuItem!]!
   updateManyObjects(inputs: [UpdateOneObjectInput!]!): [Object!]!
@@ -3613,14 +3666,10 @@ type Object {
   namePlural: String!
   nameSingular: String!
   openRecordIn: ObjectOpenRecordIn!
-  readability: MetadataReadability!
-  readabilityParentFieldUniversalIdentifiers: [UUID!]
   searchFieldMetadataList: [SearchField!]!
-  sharingReach: ObjectSharingReach!
   shortcut: String
   universalIdentifier: String!
   updatedAt: DateTime!
-  writability: MetadataWritability!
 }
 
 type ObjectConnection {
@@ -3737,11 +3786,6 @@ enum ObjectRecordGroupByDateGranularity {
   QUARTER_OF_THE_YEAR
   WEEK
   YEAR
-}
-
-enum ObjectSharingReach {
-  ROLE_ACCESS
-  WORKSPACE
 }
 
 """Onboarding status"""
@@ -4168,6 +4212,8 @@ type Query {
   getViewSorts(viewId: String): [ViewSort!]!
   getViews(objectMetadataId: String, viewTypes: [ViewType!]): [View!]!
   getWorkspaceCreationDefaults: WorkspaceCreationDefaultsDTO!
+  gettingStartedProgress: GettingStartedProgress!
+  gettingStartedWorkflowPreviews: [GettingStartedWorkflowPreview!]!
   githubClaimAuthorizationUrl(applicationRegistrationId: String!): String!
   isApplicationStopped(applicationUniversalIdentifier: String!): Boolean!
   lineChartData(input: LineChartDataInput!): LineChartData!
@@ -4280,13 +4326,12 @@ enum RecordShareRowCause {
 
 type RecordSharingDTO {
   canManageSharing: Boolean!
-  defaultGeneralAccessLevel: RecordShareAccessLevel
-  generalAccessLevel: RecordShareAccessLevel
   hasManagedGeneralAccess: Boolean!
+  isPrivate: Boolean!
+  isShareable: Boolean!
   permissions: RecordPermissionsDTO!
   roles: [RecordSharingRoleDTO!]!
   shares: [RecordSharingGrantDTO!]!
-  sharingMode: RecordSharingMode!
 }
 
 type RecordSharingGrantDTO {
@@ -4296,16 +4341,6 @@ type RecordSharingGrantDTO {
   principalRoleId: UUID
   principalType: RecordSharePrincipalType!
   rowCause: RecordShareRowCause!
-}
-
-"""
-How records of an object are shared: only through roles, private until shared, readable through linked records, or open by default with per-record exceptions
-"""
-enum RecordSharingMode {
-  INHERITED
-  OPEN_BY_DEFAULT
-  PRIVATE
-  ROLE_ONLY
 }
 
 type RecordSharingRoleDTO {
@@ -4330,6 +4365,7 @@ input RecordTargetInput {
 type RelatedRecordPath {
   firstFieldMetadataId: UUID!
   id: UUID!
+  isInherent: Boolean!
   objectMetadataId: UUID!
   secondFieldMetadataId: UUID
   thirdFieldMetadataId: UUID
@@ -4417,6 +4453,7 @@ type RowLevelPermissionPredicate {
   objectMetadataId: String!
   operand: RowLevelPermissionPredicateOperand!
   positionInRowLevelPermissionPredicateGroup: Float
+  relationFieldMetadataId: String
   roleId: String!
   rowLevelPermissionPredicateGroupId: String
   subFieldName: String
@@ -4452,6 +4489,7 @@ input RowLevelPermissionPredicateInput {
   id: UUID
   operand: RowLevelPermissionPredicateOperand!
   positionInRowLevelPermissionPredicateGroup: Float
+  relationFieldMetadataId: UUID
   rowLevelPermissionPredicateGroupId: UUID
   subFieldName: String
   value: JSON
@@ -5087,6 +5125,13 @@ input UpdateFrontComponentInputUpdates {
   name: String
 }
 
+input UpdateGettingStartedInput {
+  completedStepActionKey: GettingStartedStepActionKey
+  isHidden: Boolean
+  selectedStepActionKey: GettingStartedStepActionKey
+  snoozedUntil: String
+}
+
 input UpdateLabPublicFeatureFlagInput {
   publicFeatureFlag: String!
   value: Boolean!
@@ -5180,8 +5225,6 @@ input UpdateObjectPayload {
   namePlural: String
   nameSingular: String
   openRecordIn: ObjectOpenRecordIn
-  readability: MetadataReadability
-  sharingReach: ObjectSharingReach
   shortcut: String
   translations: [MetadataTranslationOverrideInput!]
 }
@@ -6196,6 +6239,31 @@ enum WidgetType {
   WORKFLOW
   WORKFLOW_RUN
   WORKFLOW_VERSION
+}
+
+enum WorkflowActionType {
+  AI_AGENT
+  CLASSIFY
+  CODE
+  CREATE_CALENDAR_EVENT
+  CREATE_RECORD
+  DELAY
+  DELETE_RECORD
+  DRAFT_EMAIL
+  EMPTY
+  FILTER
+  FIND_RECORDS
+  FORM
+  HTTP_REQUEST
+  IF_ELSE
+  ITERATOR
+  LOGIC_FUNCTION
+  PICK_RECORD
+  SEND_CHAT_MESSAGE
+  SEND_EMAIL
+  UPDATE_RECORD
+  UPSERT_RECORD
+  WAIT_FOR_EVENT
 }
 
 type WorkflowConfiguration {
