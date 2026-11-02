@@ -44,7 +44,6 @@ describe('ToolRegistryService', () => {
         rolePermissionConfig: {
           intersectionOf: { userWorkspaceRoleId: 'member-role-id' },
         },
-        authPrincipalVariant: undefined,
       };
 
       await toolRegistryService.getCatalog({
@@ -53,7 +52,6 @@ describe('ToolRegistryService', () => {
           intersectionOf: { userWorkspaceRoleId: 'member-role-id' },
         },
         explicitObjectGrants: { canReadAllObjectRecords: true },
-        authPrincipalVariant: undefined,
         resolveExecutionContext: async () => resolvedContext,
       });
 
