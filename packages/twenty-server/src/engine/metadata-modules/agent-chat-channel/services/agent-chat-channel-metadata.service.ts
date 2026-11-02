@@ -121,11 +121,16 @@ export class AgentChatChannelMetadataService {
       callingApplication ??
       (await this.findWorkspaceCustomFlatApplication(workspaceId));
 
-    const channel = await this.findOrInsertChannel({
+    const existingChannel = await this.findOrInsertChannel({
       workspaceId,
       applicationUniversalIdentifier: ownerFlatApplication.universalIdentifier,
       universalIdentifier: universalIdentifier?.toLowerCase() ?? v4(),
       ...channelToCreate,
+    });
+    const channel = await this.reclaimRetainedChannel({
+      workspaceId,
+      channel: existingChannel,
+      ownerFlatApplication,
     });
 
     assertAgentChatChannelOwnedByApplicationOrThrow({
@@ -278,9 +283,13 @@ export class AgentChatChannelMetadataService {
   async transferApplicationChannelsToWorkspace({
     workspaceId,
     applicationId,
+    applicationUniversalIdentifier,
+    shouldKeepAgentChatChannels,
   }: {
     workspaceId: string;
     applicationId: string;
+    applicationUniversalIdentifier: string;
+    shouldKeepAgentChatChannels: boolean;
   }): Promise<void> {
     const workspaceCustomFlatApplication =
       await this.findWorkspaceCustomFlatApplication(workspaceId);
@@ -291,8 +300,21 @@ export class AgentChatChannelMetadataService {
           .getRepository(AgentChatChannelEntity)
           .createQueryBuilder()
           .update()
-          .set({ applicationId: workspaceCustomFlatApplication.id })
-          .where({ workspaceId, applicationId })
+          .set({
+            applicationId: workspaceCustomFlatApplication.id,
+            retainedApplicationUniversalIdentifier:
+              applicationUniversalIdentifier,
+          })
+          .where({
+            workspaceId,
+            applicationId,
+            ...(!shouldKeepAgentChatChannels
+              ? {
+                  retainedApplicationUniversalIdentifier:
+                    applicationUniversalIdentifier,
+                }
+              : {}),
+          })
           .returning(['id'])
           .execute();
         const transferredChannels: Pick<AgentChatChannelEntity, 'id'>[] =
@@ -360,6 +382,52 @@ export class AgentChatChannelMetadataService {
     });
   }
 
+  private async reclaimRetainedChannel({
+    workspaceId,
+    channel,
+    ownerFlatApplication,
+  }: {
+    workspaceId: string;
+    channel: FlatAgentChatChannelWithRoleIds;
+    ownerFlatApplication: FlatApplication;
+  }): Promise<FlatAgentChatChannelWithRoleIds> {
+    const isRetainedByCallingApplication =
+      channel.retainedApplicationUniversalIdentifier ===
+      ownerFlatApplication.universalIdentifier;
+
+    if (
+      channel.applicationId === ownerFlatApplication.id ||
+      !isRetainedByCallingApplication
+    ) {
+      return channel;
+    }
+
+    const workspaceCustomFlatApplication =
+      await this.findWorkspaceCustomFlatApplication(workspaceId);
+
+    if (channel.applicationId !== workspaceCustomFlatApplication.id) {
+      return channel;
+    }
+
+    await this.coreDataSource.getRepository(AgentChatChannelEntity).update(
+      {
+        id: channel.id,
+        workspaceId,
+        applicationId: workspaceCustomFlatApplication.id,
+        retainedApplicationUniversalIdentifier:
+          ownerFlatApplication.universalIdentifier,
+      },
+      { applicationId: ownerFlatApplication.id },
+    );
+
+    await this.flatEntityMapsCacheService.invalidateFlatEntityMaps({
+      workspaceId,
+      flatMapsKeys: ['flatAgentChatChannelMaps'],
+    });
+
+    return this.findChannelOrThrow({ workspaceId, channelId: channel.id });
+  }
+
   private async insertChannel({
     workspaceId,
     applicationUniversalIdentifier,
@@ -396,6 +464,7 @@ export class AgentChatChannelMetadataService {
           channelRoleUniversalIdentifiers: [],
           navigationMenuItemUniversalIdentifiers: [],
           applicationUniversalIdentifier,
+          retainedApplicationUniversalIdentifier: null,
           createdAt: now,
           updatedAt: now,
         },

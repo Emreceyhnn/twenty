@@ -387,11 +387,14 @@ export class ApplicationSyncService {
 
     await progressReporter.reportStepCompleted('UNINSTALL_HOOK');
 
-    if (shouldKeepAgentChatChannels) {
-      await this.agentChatChannelMetadataService.transferApplicationChannelsToWorkspace(
-        { workspaceId, applicationId: application.id },
-      );
-    }
+    await this.agentChatChannelMetadataService.transferApplicationChannelsToWorkspace(
+      {
+        workspaceId,
+        applicationId: application.id,
+        applicationUniversalIdentifier,
+        shouldKeepAgentChatChannels,
+      },
+    );
 
     const flatEntityMapsCacheKeys = Object.values(ALL_METADATA_NAME).map(
       getMetadataFlatEntityMapsKey,

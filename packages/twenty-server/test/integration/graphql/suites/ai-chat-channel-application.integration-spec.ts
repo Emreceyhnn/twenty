@@ -5,12 +5,16 @@ import { SystemPermissionFlag } from 'twenty-shared/constants';
 import { isDefined } from 'twenty-shared/utils';
 
 import { assertGraphQLSuccessfulResponse } from 'test/integration/graphql/utils/graphql-test-assertions.util';
+import { TEST_APPLICATION_PACKAGE_JSON } from 'test/integration/metadata/suites/application/constants/test-application-package-json.constant';
+import { buildBaseManifest } from 'test/integration/metadata/suites/application/utils/build-base-manifest.util';
 import { cleanupApplicationAndAppRegistration } from 'test/integration/metadata/suites/application/utils/cleanup-application-and-app-registration.util';
 import {
   type ApplicationWithResources,
   setupApplicationWithResources,
 } from 'test/integration/metadata/suites/application/utils/setup-application-with-resources.util';
+import { syncApplication } from 'test/integration/metadata/suites/application/utils/sync-application.util';
 import { uninstallApplication } from 'test/integration/metadata/suites/application/utils/uninstall-application.util';
+import { uploadApplicationFile } from 'test/integration/metadata/suites/application/utils/upload-application-file.util';
 import { findOneRoleByLabel } from 'test/integration/metadata/suites/role/utils/find-one-role-by-label.util';
 import { makeMetadataApiRequest } from 'test/integration/metadata/suites/utils/make-metadata-api-request.util';
 import { destroyAgentChatThread } from 'test/integration/utils/destroy-agent-chat-thread.util';
@@ -254,6 +258,65 @@ const listChannels = async (token: string): Promise<ListedChannel[]> => {
 };
 
 const buildChannelName = () => `Application channel ${randomUUID()}`;
+
+const reinstallApplicationOrThrow = async (
+  applicationUniversalIdentifier: string,
+): Promise<{ id: string; token: string }> => {
+  const applicationResponse = await makeMetadataApiRequest({
+    query: parse(`
+      mutation ReinstallApplication($universalIdentifier: String!, $name: String!) {
+        createDevelopmentApplication(universalIdentifier: $universalIdentifier, name: $name) { id }
+      }
+    `),
+    variables: {
+      universalIdentifier: applicationUniversalIdentifier,
+      name: 'Reinstalled Channel Application',
+    },
+  });
+
+  assertGraphQLSuccessfulResponse(applicationResponse);
+
+  const applicationId =
+    applicationResponse.body.data.createDevelopmentApplication.id;
+
+  await uploadApplicationFile({
+    applicationUniversalIdentifier,
+    fileFolder: 'Dependencies',
+    filePath: 'package.json',
+    fileBuffer: Buffer.from(TEST_APPLICATION_PACKAGE_JSON),
+    filename: 'package.json',
+    expectToFail: false,
+  });
+
+  const roleUniversalIdentifier = randomUUID();
+  const { errors } = await syncApplication({
+    manifest: buildBaseManifest({
+      appId: applicationUniversalIdentifier,
+      roleId: roleUniversalIdentifier,
+      overrides: {
+        roles: [
+          {
+            universalIdentifier: roleUniversalIdentifier,
+            label: 'Reinstalled Channel Application Role',
+            permissionFlagUniversalIdentifiers:
+              CHANNEL_MANAGER_PERMISSION_FLAGS,
+          },
+        ],
+      },
+    }),
+  });
+
+  expect(errors).toBeUndefined();
+
+  const {
+    applicationAccessToken: { token },
+  } = await generateApplicationTokenPair({
+    workspaceId: SEED_APPLE_WORKSPACE_ID,
+    applicationId,
+  });
+
+  return { id: applicationId, token };
+};
 
 describe('Inbox channels managed by an application', () => {
   const createdChannelIds: string[] = [];
@@ -821,13 +884,16 @@ describe('Uninstalling an application that created inbox channels', () => {
     return threadId;
   };
 
-  it('keeps its channels with their chats as custom channels of the workspace, open to the roles it does not own', async () => {
+  it('keeps its channels and chats through uninstall, reinstall and failed reinstall rollback', async () => {
     const workspaceCustomApplicationId =
       await findWorkspaceCustomApplicationIdOrThrow();
     const { id: memberRoleId } = await findOneRoleByLabel({ label: 'Member' });
+    const universalIdentifier = randomUUID();
+    const name = buildChannelName();
     const channelId = await createChannelOrThrow({
       input: {
-        name: buildChannelName(),
+        name,
+        universalIdentifier,
         roleIds: [uninstalledApplication.roleId, memberRoleId],
       },
       token: uninstalledApplication.token,
@@ -869,7 +935,72 @@ describe('Uninstalling an application that created inbox channels', () => {
 
     expect(grantRoleIds).toContain(memberRoleId);
     expect(grantRoleIds).not.toContain(uninstalledApplication.roleId);
-  }, 60_000);
+
+    const otherApplicationResponse = await makeMetadataApiRequest(
+      {
+        query: CREATE_CHANNEL,
+        variables: {
+          input: { name: buildChannelName(), universalIdentifier },
+        },
+      },
+      rolledBackApplication.token,
+    );
+
+    expect(otherApplicationResponse.body.errors[0].extensions).toMatchObject({
+      code: 'CONFLICT',
+      subCode: AiExceptionCode.CHAT_CHANNEL_UNIVERSAL_IDENTIFIER_TAKEN,
+    });
+    expect(await readChannelApplicationId(channelId)).toBe(
+      workspaceCustomApplicationId,
+    );
+
+    const reinstalledApplication = await reinstallApplicationOrThrow(
+      uninstalledApplication.application.universalIdentifier,
+    );
+    const reclaimResponse = await makeMetadataApiRequest(
+      {
+        query: CREATE_CHANNEL,
+        variables: {
+          input: { name: buildChannelName(), universalIdentifier },
+        },
+      },
+      reinstalledApplication.token,
+    );
+
+    assertGraphQLSuccessfulResponse(reclaimResponse);
+    expect(reclaimResponse.body.data.createAgentChatChannel).toMatchObject({
+      id: channelId,
+      name,
+      applicationId: reinstalledApplication.id,
+      roleIds: [memberRoleId],
+    });
+    expect(await readThreadChannelState(threadId)).toMatchObject({
+      channelId,
+    });
+    expect(await readChannelGrantRoleIds(threadId)).toEqual(grantRoleIds);
+
+    const freshChannelId = await createChannelOrThrow({
+      input: { name: buildChannelName(), universalIdentifier: randomUUID() },
+      token: reinstalledApplication.token,
+    });
+
+    await getAppProviderByClassName<ApplicationSyncService>(
+      'ApplicationSyncService',
+    ).uninstallApplication({
+      workspaceId: SEED_APPLE_WORKSPACE_ID,
+      applicationUniversalIdentifier:
+        uninstalledApplication.application.universalIdentifier,
+      shouldRunUninstallHook: false,
+      shouldKeepAgentChatChannels: false,
+    });
+
+    expect(await readChannelApplicationId(channelId)).toBe(
+      workspaceCustomApplicationId,
+    );
+    expect(await readChannelApplicationId(freshChannelId)).toBeUndefined();
+    expect(await readThreadChannelState(threadId)).toMatchObject({ channelId });
+    expect(await readChannelGrantRoleIds(threadId)).toEqual(grantRoleIds);
+  }, 120_000);
 
   it('deletes its channels when its failed install is rolled back, moving their chats to General with the access of General', async () => {
     const generalChannelId = await findGeneralChannelId();
