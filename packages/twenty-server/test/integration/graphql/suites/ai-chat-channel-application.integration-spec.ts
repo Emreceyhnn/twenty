@@ -26,6 +26,7 @@ import { ApplicationEntity } from 'src/engine/core-modules/application/applicati
 import { WorkspaceEntity } from 'src/engine/core-modules/workspace/workspace.entity';
 import { AgentChatChannelRoleEntity } from 'src/engine/metadata-modules/agent-chat-channel/entities/agent-chat-channel-role.entity';
 import { AgentChatChannelEntity } from 'src/engine/metadata-modules/agent-chat-channel/entities/agent-chat-channel.entity';
+import { type AgentChatChannelMetadataService } from 'src/engine/metadata-modules/agent-chat-channel/services/agent-chat-channel-metadata.service';
 import { AiExceptionCode } from 'src/engine/metadata-modules/ai/ai.exception';
 import { getWorkspaceSchemaName } from 'src/engine/workspace-datasource/utils/get-workspace-schema-name.util';
 import { SEED_APPLE_WORKSPACE_ID } from 'src/engine/workspace-manager/dev-seeder/core/constants/seeder-workspaces.constant';
@@ -900,23 +901,31 @@ describe('Uninstalling an application that created inbox channels', () => {
         uninstalledApplication.application.universalIdentifier,
       progressReporter: {
         reportStepCompleted: async (step) => {
-          if (step !== 'COMPUTE_METADATA_TO_DELETE') {
+          if (step !== 'RUN_WORKSPACE_MIGRATION') {
             return;
           }
 
-          const response = await makeMetadataApiRequest(
-            {
-              query: CREATE_CHANNEL,
-              variables: {
-                input: { name: buildChannelName(), universalIdentifier },
-              },
-            },
-            uninstalledApplication.token,
-          );
+          const callingApplication = await getCoreRepository<ApplicationEntity>(
+            ApplicationEntity,
+          ).findOneByOrFail({
+            id: uninstalledApplication.application.id,
+            workspaceId: SEED_APPLE_WORKSPACE_ID,
+          });
 
-          expect(response.body.errors[0].extensions).toMatchObject({
-            code: 'CONFLICT',
-            subCode: AiExceptionCode.CHAT_CHANNEL_UNIVERSAL_IDENTIFIER_TAKEN,
+          await expect(
+            getAppProviderByClassName<AgentChatChannelMetadataService>(
+              'AgentChatChannelMetadataService',
+            ).createChannel({
+              workspaceId: SEED_APPLE_WORKSPACE_ID,
+              callingApplication,
+              universalIdentifier,
+              name: buildChannelName(),
+              icon: null,
+              color: null,
+              roleIds: [],
+            }),
+          ).rejects.toMatchObject({
+            code: AiExceptionCode.CHAT_CHANNEL_UNIVERSAL_IDENTIFIER_TAKEN,
           });
         },
       },
