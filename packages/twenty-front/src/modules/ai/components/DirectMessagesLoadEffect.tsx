@@ -7,13 +7,20 @@ import { currentWorkspaceMemberState } from '@/auth/states/currentWorkspaceMembe
 
 export const DirectMessagesLoadEffect = () => {
   const { loadDirectMessages } = useLoadDirectMessages();
-  const updateCount = useAtomStateValue(agentChatThreadRecordUpdateCountState);
+  const agentChatThreadRecordUpdateCount = useAtomStateValue(
+    agentChatThreadRecordUpdateCountState,
+  );
   const workspaceId = useAtomStateValue(currentWorkspaceState)?.id;
   const workspaceMemberId = useAtomStateValue(currentWorkspaceMemberState)?.id;
 
   useEffect(() => {
     void loadDirectMessages('refresh');
-  }, [loadDirectMessages, updateCount, workspaceId, workspaceMemberId]);
+  }, [
+    loadDirectMessages,
+    agentChatThreadRecordUpdateCount,
+    workspaceId,
+    workspaceMemberId,
+  ]);
 
   return null;
 };

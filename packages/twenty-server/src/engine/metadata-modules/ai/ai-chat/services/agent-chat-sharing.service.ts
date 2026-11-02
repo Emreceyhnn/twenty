@@ -28,6 +28,8 @@ import { buildRecordShareLockKey } from 'src/engine/permissions/record-share/uti
 import { RecordShareException } from 'src/engine/permissions/record-share/record-share.exception';
 import { RecordShareStorageService } from 'src/engine/permissions/record-share/services/record-share-storage.service';
 import { RecordAccessPolicyService } from 'src/engine/permissions/combine/services/record-access-policy.service';
+import { isWorkspaceMemberInDirectMessagePair } from 'src/engine/permissions/direct-message/utils/is-workspace-member-in-direct-message-pair.util';
+import { hasDirectMessageThreadIdentity } from 'src/engine/permissions/direct-message/utils/has-direct-message-thread-identity.util';
 import { RecordSharePrincipalService } from 'src/engine/permissions/record-share/services/record-share-principal.service';
 import { RecordSharingService } from 'src/engine/permissions/record-share/services/record-sharing.service';
 import { resolveRecordIdsSharedWithPrincipals } from 'src/engine/permissions/record-share/utils/resolve-record-ids-shared-with-principals.util';
@@ -39,7 +41,6 @@ import { acquireAgentChatChannelGrantLocksForThreadWriteOrThrow } from 'src/engi
 import { findAgentChatFlatObjectMetadata } from 'src/engine/metadata-modules/ai/ai-chat/utils/find-agent-chat-flat-object-metadata.util';
 import { lockAgentChatChannelForThreadWriteOrThrow } from 'src/engine/metadata-modules/ai/ai-chat/utils/lock-agent-chat-channel-for-thread-write-or-throw.util';
 import { throwAgentChatThreadNotFound } from 'src/engine/metadata-modules/ai/ai-chat/utils/throw-agent-chat-thread-not-found.util';
-import { getAgentChatDirectMessagePeerOrThrow } from 'src/engine/metadata-modules/ai/ai-chat/utils/get-agent-chat-direct-message-peer-or-throw.util';
 import { AgentMessageRole } from 'src/engine/metadata-modules/ai/ai-history/enums/agent-message-role.enum';
 import { AgentChatThreadWorkspaceEntity } from 'src/engine/metadata-modules/ai/ai-history/standard-objects/agent-chat-thread.workspace-entity';
 import { InjectAgentHistoryRepository } from 'src/engine/metadata-modules/ai/ai-history/repositories/inject-agent-history-repository.decorator';
@@ -151,7 +152,7 @@ export class AgentChatSharingService {
       where: { id: threadId },
     });
 
-    if (thread?.conversationType === 'DIRECT_MESSAGE') {
+    if (isDefined(thread) && hasDirectMessageThreadIdentity(thread)) {
       return false;
     }
 
@@ -200,11 +201,13 @@ export class AgentChatSharingService {
       return throwAgentChatThreadNotFound();
     }
 
-    if (thread.conversationType === 'DIRECT_MESSAGE') {
-      getAgentChatDirectMessagePeerOrThrow({
-        thread,
+    if (
+      !isWorkspaceMemberInDirectMessagePair({
+        directMessagePair: thread,
         workspaceMemberId: args.workspaceMemberId,
-      });
+      })
+    ) {
+      return throwAgentChatThreadNotFound();
     }
 
     await this.workspaceOrmManager.executeInWorkspaceContext(
@@ -294,33 +297,19 @@ export class AgentChatSharingService {
       transactionScope,
       operationType: 'update',
     });
-
-    if (thread.conversationType === 'DIRECT_MESSAGE') {
-      const peerId = getAgentChatDirectMessagePeerOrThrow({
-        thread,
-        workspaceMemberId: args.workspaceMemberId,
-      });
-
-      return this.filterMemberIds(
-        memberIds.filter(
-          (memberId) =>
-            memberId === peerId || memberId === args.workspaceMemberId,
-        ),
-        (workspaceMemberId) =>
-          this.getThreadWithAccess({
-            ...args,
-            workspaceMemberId,
-            transactionScope,
-            operationType: 'update',
-          }).then(() => true),
-      );
-    }
-
-    const chatMemberIds = await this.filterMemberIds(memberIds, (memberId) =>
-      this.getAuthContext({
-        workspaceId: args.workspaceId,
-        workspaceMemberId: memberId,
-      }).then(() => true),
+    const pairMemberIds = memberIds.filter((workspaceMemberId) =>
+      isWorkspaceMemberInDirectMessagePair({
+        directMessagePair: thread,
+        workspaceMemberId,
+      }),
+    );
+    const chatMemberIds = await this.filterMemberIds(
+      pairMemberIds,
+      (memberId) =>
+        this.getAuthContext({
+          workspaceId: args.workspaceId,
+          workspaceMemberId: memberId,
+        }).then(() => true),
     );
 
     if (chatMemberIds.length === 0) {
@@ -739,7 +728,9 @@ export class AgentChatSharingService {
             await this.assertOperationAllowed({
               threadId: args.threadId,
               workspaceMemberId: args.workspaceMemberId,
-              operationType: 'restore',
+              operationType: hasDirectMessageThreadIdentity(thread)
+                ? 'update'
+                : 'restore',
             });
             if (!isDefined(thread.deletedAt)) {
               return thread;

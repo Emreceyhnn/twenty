@@ -429,6 +429,19 @@ describe('Assistant reply selection with stored conversation participants', () =
       aiChatDirectMessageAssistantMode: AiChatAssistantMode.NEVER,
     });
 
+    await global.testDataSource
+      .createQueryBuilder()
+      .delete()
+      .from(`${context.schema}.agentChatThreadParticipant`)
+      .where(
+        '"threadId" = :threadId AND "workspaceMemberId" = :workspaceMemberId',
+        {
+          threadId,
+          workspaceMemberId: WORKSPACE_MEMBER_DATA_SEED_IDS.JONY,
+        },
+      )
+      .execute();
+
     expect(await context.readParticipants(threadId)).toHaveLength(1);
     await expect(shouldExecute({ threadId, messageId })).resolves.toBe(false);
   });

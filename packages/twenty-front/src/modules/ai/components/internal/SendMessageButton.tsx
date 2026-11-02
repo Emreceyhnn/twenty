@@ -27,7 +27,7 @@ export const SendMessageButton = ({
   const agentChatIsLoading = useAtomStateValue(agentChatIsLoadingSelector);
 
   const currentAiChatThread = useAtomStateValue(currentAiChatThreadState);
-  const isSendingDirectMessage = useAtomFamilyStateValue(
+  const agentChatDirectMessageSending = useAtomFamilyStateValue(
     agentChatDirectMessageSendingFamilyState,
     currentAiChatThread ?? '',
   );
@@ -49,7 +49,7 @@ export const SendMessageButton = ({
   };
 
   if (
-    !isSendingDirectMessage &&
+    !agentChatDirectMessageSending &&
     (agentChatIsStreaming || agentChatIsAwaitingFirstChunk)
   ) {
     return (
@@ -76,7 +76,7 @@ export const SendMessageButton = ({
       onClick={handleSendClick}
       disabled={
         isDisabled ||
-        isSendingDirectMessage ||
+        agentChatDirectMessageSending ||
         agentChatInputIsEmpty ||
         agentChatIsLoading
       }

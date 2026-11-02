@@ -5,23 +5,29 @@ import { isDefined } from 'twenty-shared/utils';
 import { type PermissionsRowAccessEvaluationRequest } from 'src/engine/permissions/combine/types/row-access-policy.type';
 import { areRecordGrantsHeldToRowLevelPermissions } from 'src/engine/permissions/combine/utils/are-record-grants-held-to-row-level-permissions.util';
 import { resolvePermissionsRowAccessOutcome } from 'src/engine/permissions/combine/utils/resolve-permissions-row-access-outcome.util';
+import { findDirectMessageAdmittedRecordIds } from 'src/engine/permissions/direct-message/utils/find-direct-message-admitted-record-ids.util';
 import { findPermissionsCreatorAdmittedRecordIds } from 'src/engine/permissions/private-record/utils/find-permissions-creator-admitted-record-ids.util';
-import { findDirectMessagePairAdmittedRecordIds } from 'src/engine/permissions/private-record/utils/find-direct-message-pair-admitted-record-ids.util';
 import { isShareOnlyWhilePrivateRecordFlagDisabled } from 'src/engine/permissions/private-record/utils/is-share-only-while-private-record-flag-disabled.util';
 import { findPermissionsShareAdmittedRecordIds } from 'src/engine/permissions/record-share/utils/find-permissions-share-admitted-record-ids.util';
 import { findPermissionsRlsAdmittedRecordIds } from 'src/engine/permissions/rls/utils/find-permissions-rls-admitted-record-ids.util';
 import { findRowLevelPermissionMatchingRecordIds } from 'src/engine/permissions/rls/utils/find-row-level-permission-matching-record-ids.util';
 import { findPermissionsObjectAdmittedRecordIds } from 'src/engine/permissions/role/utils/find-permissions-object-admitted-record-ids.util';
 
-const findGrantedRecordIds = async (
+export const findPermissionsAdmittedRecordIds = async (
   request: PermissionsRowAccessEvaluationRequest,
 ): Promise<Set<string>> => {
-  const { records } = request;
   const outcome = resolvePermissionsRowAccessOutcome(request);
 
-  if (outcome === false || records.length === 0) {
+  if (outcome === false || request.records.length === 0) {
     return new Set();
   }
+
+  const directMessageAdmittedRecordIds =
+    await findDirectMessageAdmittedRecordIds(request);
+  const records = request.records.filter(({ id }) =>
+    directMessageAdmittedRecordIds.has(id),
+  );
+  const admittedRequest = { ...request, records };
 
   if (outcome === true) {
     return new Set(records.map((record) => record.id));
@@ -31,8 +37,8 @@ const findGrantedRecordIds = async (
   const admittedRecordIds = isShareOnlyWhilePrivateRecordFlagDisabled(request)
     ? new Set<string>()
     : new Set([
-        ...(await findPermissionsObjectAdmittedRecordIds(request)),
-        ...(await findPermissionsRlsAdmittedRecordIds(request)),
+        ...(await findPermissionsObjectAdmittedRecordIds(admittedRequest)),
+        ...(await findPermissionsRlsAdmittedRecordIds(admittedRequest)),
       ]);
   const rowLevelPermissionMatchingRecordIds =
     areRecordGrantsHeldToRowLevelPermissions(request)
@@ -52,23 +58,11 @@ const findGrantedRecordIds = async (
     return admittedRecordIds;
   }
 
-  const recordGrantRequest = { ...request, records: remainingRecords };
+  const recordGrantRequest = { ...admittedRequest, records: remainingRecords };
 
   return new Set([
     ...admittedRecordIds,
     ...(await findPermissionsShareAdmittedRecordIds(recordGrantRequest)),
     ...(await findPermissionsCreatorAdmittedRecordIds(recordGrantRequest)),
   ]);
-};
-
-export const findPermissionsAdmittedRecordIds = async (
-  request: PermissionsRowAccessEvaluationRequest,
-): Promise<Set<string>> => {
-  const pairAdmittedRecordIds =
-    await findDirectMessagePairAdmittedRecordIds(request);
-
-  return findGrantedRecordIds({
-    ...request,
-    records: request.records.filter(({ id }) => pairAdmittedRecordIds.has(id)),
-  });
 };

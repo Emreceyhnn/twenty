@@ -260,6 +260,8 @@ const SCHEMA = getWorkspaceSchemaName(WORKSPACE_ID);
         conversationWriter,
         chatThreadService,
         participationService,
+        {} as never,
+        {} as never,
       );
 
     const createActorService = (messageRepository: typeof messages) =>

@@ -1,6 +1,9 @@
 import { createStore, Provider, useStore } from 'jotai';
 import { useState } from 'react';
-import { isDefined, tipTapDocumentToMarkdown } from 'twenty-shared/utils';
+import {
+  isDefined,
+  parseCanonicalTipTapJsonDocument,
+} from 'twenty-shared/utils';
 import { Button, Input } from 'twenty-ui/primitives/input';
 import { Text } from 'twenty-ui/primitives/typography';
 
@@ -29,17 +32,31 @@ type DirectMessageFlowExampleProps = {
   onCanonicalSelection: (threadId: string | null) => void;
 };
 
+type DirectMessageFlowContentProps = DirectMessageFlowExampleProps;
+
 const DirectMessageFlowContent = ({
   onCanonicalSelection,
-}: DirectMessageFlowExampleProps) => {
+}: DirectMessageFlowContentProps) => {
   const store = useStore();
   const { openDirectMessage, isOpening } = useOpenDirectMessage();
   const { handoffDirectMessageDraft } = useHandoffDirectMessageDraft();
   const { peer } = useAiChatDirectMessage();
-  const threadId = useAtomStateValue(currentAiChatThreadState);
-  const [drafts, setDrafts] = useAtomState(agentChatDraftsByThreadIdState);
+  const currentAiChatThread = useAtomStateValue(currentAiChatThreadState);
+  const [agentChatDraftsByThreadId, setAgentChatDraftsByThreadId] =
+    useAtomState(agentChatDraftsByThreadIdState);
   const { uploadedFiles, setUploadedFiles, selectedFiles, setSelectedFiles } =
     useAgentChatAttachments();
+  const draftDocument = parseCanonicalTipTapJsonDocument(
+    agentChatDraftsByThreadId[currentAiChatThread ?? ''] ?? '',
+  );
+  const draftText =
+    draftDocument?.content
+      ?.map(({ content }) =>
+        (content ?? [])
+          .map(({ text, type }) => (type === 'hardBreak' ? '\n' : (text ?? '')))
+          .join(''),
+      )
+      .join('\n') ?? '';
 
   return (
     <>
@@ -62,14 +79,15 @@ const DirectMessageFlowContent = ({
       <Text>{peer?.name ?? 'Choose a person'}</Text>
       <Input
         aria-label="Message draft"
-        value={tipTapDocumentToMarkdown(drafts[threadId ?? ''] ?? '')}
+        value={draftText}
         onChange={(event) => {
-          if (isDefined(threadId)) {
-            setDrafts((previous) => ({
+          if (isDefined(currentAiChatThread)) {
+            setAgentChatDraftsByThreadId((previous) => ({
               ...previous,
-              [threadId]: serializePlainTextAsAdvancedTextEditorDocument(
-                event.target.value,
-              ),
+              [currentAiChatThread]:
+                serializePlainTextAsAdvancedTextEditorDocument(
+                  event.target.value,
+                ),
             }));
           }
         }}
@@ -104,11 +122,11 @@ const DirectMessageFlowContent = ({
       ))}
       <Button
         onClick={async () => {
-          if (!isDefined(threadId)) {
+          if (!isDefined(currentAiChatThread)) {
             return;
           }
           await handoffDirectMessageDraft({
-            draftId: threadId,
+            draftId: currentAiChatThread,
             threadId: DIRECT_MESSAGE_FLOW_FIXTURE.canonicalThreadId,
           });
           onCanonicalSelection(store.get(currentAiChatThreadState.atom));

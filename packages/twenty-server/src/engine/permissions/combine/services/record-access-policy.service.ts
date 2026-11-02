@@ -1,22 +1,26 @@
 /* @license Enterprise */
 
 import { Injectable } from '@nestjs/common';
-import { isNonEmptyString } from '@sniptt/guards';
-import { In } from 'typeorm';
 
 import groupBy from 'lodash.groupby';
 import { type ObjectRecordEvent } from 'twenty-shared/database-events';
-import { type RecordShareAccessLevel } from 'twenty-shared/types';
+import { STANDARD_OBJECTS } from 'twenty-shared/metadata';
+import {
+  type ObjectRecord,
+  type RecordShareAccessLevel,
+} from 'twenty-shared/types';
 import { isDefined } from 'twenty-shared/utils';
 
 import { PrivateRecordStorageService } from 'src/engine/permissions/private-record/services/private-record-storage.service';
 import { type PrivateRecordState } from 'src/engine/permissions/private-record/types/private-record-state.type';
+import { type AgentChatThreadWorkspaceEntity } from 'src/engine/metadata-modules/ai/ai-history/standard-objects/agent-chat-thread.workspace-entity';
+import { type AgentMessageWorkspaceEntity } from 'src/engine/metadata-modules/ai/ai-history/standard-objects/agent-message.workspace-entity';
 import { RecordShareStorageService } from 'src/engine/permissions/record-share/services/record-share-storage.service';
 import { type EventRecordAccessGate } from 'src/engine/permissions/combine/types/event-record-access-gate.type';
 import {
   type PermissionsMetadataMaps,
   type PermissionsObjectAccessRequest,
-  type RowAccessRecord,
+  type PermissionsRowAccessEvaluationRequest,
 } from 'src/engine/permissions/combine/types/row-access-policy.type';
 import { type PermissionsPrincipalsContext } from 'src/engine/permissions/principal/types/permissions-principals-context.type';
 import { type PermissionsPrincipalsWithRolesContext } from 'src/engine/permissions/principal/types/permissions-principals-with-roles-context.type';
@@ -34,6 +38,11 @@ import { WorkspaceOrmManager } from 'src/engine/twenty-orm/workspace-orm.manager
 import { type RecordShare } from 'src/engine/permissions/record-share/types/record-share.type';
 import { findPermissionsAdmittedRecordIds } from 'src/engine/permissions/combine/utils/find-permissions-admitted-record-ids.util';
 import { resolveEventRecordSnapshots } from 'src/engine/permissions/combine/utils/resolve-event-record-snapshots.util';
+import { type DirectMessageThreadPair } from 'src/engine/permissions/direct-message/types/direct-message-thread-pair.type';
+import { findDirectMessageThreadPairs } from 'src/engine/permissions/direct-message/utils/find-direct-message-thread-pairs.util';
+import { findAgentChatMessageThreadIds } from 'src/engine/permissions/direct-message/utils/find-agent-chat-message-thread-ids.util';
+import { findDirectMessageAdmittedRecordIds } from 'src/engine/permissions/direct-message/utils/find-direct-message-admitted-record-ids.util';
+import { resolveDirectMessageEventSnapshots } from 'src/engine/permissions/direct-message/utils/resolve-direct-message-event-snapshots.util';
 import { WorkspaceCacheService } from 'src/engine/workspace-cache/services/workspace-cache.service';
 import { type WorkspaceEventBatch } from 'src/engine/workspace-event-emitter/types/workspace-event-batch.type';
 
@@ -275,6 +284,12 @@ export class RecordAccessPolicyService {
       }));
 
     let metadataMaps: Promise<PermissionsMetadataMaps> | undefined;
+    const loadMetadataMaps = () =>
+      (metadataMaps ??= this.loadPermissionsMetadataMaps(workspaceId));
+    let directMessageThreadPairs:
+      | Promise<Map<string, DirectMessageThreadPair>>
+      | undefined;
+    let agentChatMessageThreadIds: Promise<Map<string, string>> | undefined;
 
     return {
       resolveAdmittedRecordIds: async (principals) => {
@@ -284,10 +299,9 @@ export class RecordAccessPolicyService {
           return new Set<string>();
         }
 
-        return findPermissionsAdmittedRecordIds({
+        const request: PermissionsRowAccessEvaluationRequest = {
           principal,
-          metadataMaps: await (metadataMaps ??=
-            this.loadPermissionsMetadataMaps(workspaceId)),
+          metadataMaps: await loadMetadataMaps(),
           flatObjectMetadata: objectMetadata,
           operationType: 'select',
           records: resolveEventRecordSnapshots(events),
@@ -295,32 +309,102 @@ export class RecordAccessPolicyService {
             shouldIgnoreSoftDeleteDefaultFilter: true,
             fetchRecordShares,
             findPrivateRecordStates,
-            findRelatedRecords: ({ objectNameSingular, recordIds }) =>
-              this.withBypassingRepository({
+            findDirectMessageThreadPairs: async ({ threadIds }) => {
+              const maps = await loadMetadataMaps();
+              const threadObjectMetadata =
+                maps.flatObjectMetadataMaps.byUniversalIdentifier[
+                  STANDARD_OBJECTS.agentChatThread.universalIdentifier
+                ];
+
+              if (!isDefined(threadObjectMetadata)) {
+                return new Map();
+              }
+
+              return (directMessageThreadPairs ??= this.withBypassingRepository<
+                Map<string, DirectMessageThreadPair>,
+                AgentChatThreadWorkspaceEntity
+              >({
                 workspaceId,
-                objectNameSingular,
-                work: async (repository) => {
-                  if (recordIds.length === 0) {
-                    return [];
-                  }
+                objectNameSingular: threadObjectMetadata.nameSingular,
+                work: (repository) =>
+                  findDirectMessageThreadPairs({
+                    repository,
+                    metadataMaps: maps,
+                    threadIds,
+                  }),
+              }));
+            },
+            findAgentChatMessageThreadIds: async ({ messageIds }) => {
+              const maps = await loadMetadataMaps();
+              const messageObjectMetadata =
+                maps.flatObjectMetadataMaps.byUniversalIdentifier[
+                  STANDARD_OBJECTS.agentMessage.universalIdentifier
+                ];
 
-                  const records = await repository.find({
-                    where: { id: In(recordIds) },
-                    withDeleted: true,
-                  });
+              if (!isDefined(messageObjectMetadata)) {
+                return new Map();
+              }
 
-                  return records.filter((record): record is RowAccessRecord =>
-                    isNonEmptyString(record.id),
-                  );
-                },
-              }),
+              return (agentChatMessageThreadIds ??=
+                this.withBypassingRepository<
+                  Map<string, string>,
+                  AgentMessageWorkspaceEntity
+                >({
+                  workspaceId,
+                  objectNameSingular: messageObjectMetadata.nameSingular,
+                  work: (repository) =>
+                    findAgentChatMessageThreadIds({ repository, messageIds }),
+                }));
+            },
+            findAdmittedDirectMessageThreadIds: async ({
+              threadIds,
+              principal,
+              operationType,
+            }) => {
+              const maps = await loadMetadataMaps();
+              const threadObjectMetadata =
+                maps.flatObjectMetadataMaps.byUniversalIdentifier[
+                  STANDARD_OBJECTS.agentChatThread.universalIdentifier
+                ];
+
+              if (!isDefined(threadObjectMetadata)) {
+                return new Set();
+              }
+
+              return this.withBypassingRepository({
+                workspaceId,
+                objectNameSingular: threadObjectMetadata.nameSingular,
+                work: (repository) =>
+                  repository.findPrincipalAdmittedRecordIds({
+                    principal,
+                    recordIds: threadIds,
+                    operationType,
+                  }),
+              });
+            },
           },
-        });
+        };
+        const directMessageAdmittedRecordIds =
+          await findDirectMessageAdmittedRecordIds({
+            ...request,
+            records: resolveDirectMessageEventSnapshots(events),
+          });
+        const admittedRecordIds =
+          await findPermissionsAdmittedRecordIds(request);
+
+        return new Set(
+          [...admittedRecordIds].filter((recordId) =>
+            directMessageAdmittedRecordIds.has(recordId),
+          ),
+        );
       },
     };
   }
 
-  private withBypassingRepository<TResult>({
+  private withBypassingRepository<
+    TResult,
+    TEntity extends ObjectRecord = ObjectRecord,
+  >({
     workspaceId,
     objectNameSingular,
     transactionScope,
@@ -329,11 +413,11 @@ export class RecordAccessPolicyService {
     workspaceId: string;
     objectNameSingular: string;
     transactionScope?: WorkspaceTransactionScope;
-    work: (repository: WorkspaceRepository) => Promise<TResult>;
+    work: (repository: WorkspaceRepository<TEntity>) => Promise<TResult>;
   }): Promise<TResult> {
     if (isDefined(transactionScope)) {
       return work(
-        transactionScope.getRepository(objectNameSingular, {
+        transactionScope.getRepository<TEntity>(objectNameSingular, {
           shouldBypassPermissionChecks: true,
         }),
       );
@@ -342,7 +426,7 @@ export class RecordAccessPolicyService {
     return this.workspaceOrmManager.executeInWorkspaceContext(
       () =>
         work(
-          this.workspaceOrmManager.getRepository(objectNameSingular, {
+          this.workspaceOrmManager.getRepository<TEntity>(objectNameSingular, {
             shouldBypassPermissionChecks: true,
           }),
         ),

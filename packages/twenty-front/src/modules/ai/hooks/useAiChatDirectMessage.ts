@@ -14,10 +14,12 @@ import { getAbsoluteImageUrl } from '~/utils/image/getAbsoluteImageUrl';
 
 export const useAiChatDirectMessage = (threadId?: string | null) => {
   const { t } = useLingui();
-  const currentThreadId = useAtomStateValue(currentAiChatThreadState);
-  const selectedThreadId = threadId ?? currentThreadId;
+  const currentAiChatThread = useAtomStateValue(currentAiChatThreadState);
+  const selectedThreadId = threadId ?? currentAiChatThread;
   const currentWorkspaceMember = useAtomStateValue(currentWorkspaceMemberState);
-  const members = useAtomStateValue(currentWorkspaceMembersState);
+  const currentWorkspaceMembers = useAtomStateValue(
+    currentWorkspaceMembersState,
+  );
   const draft = useAtomFamilySelectorValue(
     agentChatDirectMessageDraftFamilySelector,
     selectedThreadId ?? '',
@@ -33,7 +35,9 @@ export const useAiChatDirectMessage = (threadId?: string | null) => {
         thread,
         currentWorkspaceMemberId: currentWorkspaceMember?.id,
       });
-  const member = members.find(({ id }) => id === peerWorkspaceMemberId);
+  const member = currentWorkspaceMembers.find(
+    ({ id }) => id === peerWorkspaceMemberId,
+  );
 
   return {
     isPendingDirectMessage:

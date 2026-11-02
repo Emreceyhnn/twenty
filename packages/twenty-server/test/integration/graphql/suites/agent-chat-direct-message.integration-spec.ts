@@ -6,6 +6,10 @@ import { runWithRejectedChatWrite } from 'test/integration/ai/utils/run-with-rej
 import { sendChatParticipationMessage } from 'test/integration/graphql/utils/send-chat-participation-message.util';
 import { makeMetadataApiRequest } from 'test/integration/metadata/suites/utils/make-metadata-api-request.util';
 import { getAppProviderByClassName } from 'test/integration/utils/get-app-provider-by-class-name.util';
+import {
+  RecordShareAccessLevel,
+  RecordShareRowCause,
+} from 'twenty-shared/types';
 import { assertIsDefinedOrThrow, isDefined } from 'twenty-shared/utils';
 
 import { AiChatAssistantMode } from 'src/engine/core-modules/workspace/enums/ai-chat-assistant-mode.enum';
@@ -13,6 +17,7 @@ import { type AgentChatDirectMessageIdentityService } from 'src/engine/metadata-
 import { type AgentChatQueueService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-queue.service';
 import { normalizeAgentChatDirectMessagePairOrThrow } from 'src/engine/metadata-modules/ai/ai-chat/utils/normalize-agent-chat-direct-message-pair-or-throw.util';
 import { type AgentChatThreadWorkspaceEntity } from 'src/engine/metadata-modules/ai/ai-history/standard-objects/agent-chat-thread.workspace-entity';
+import { type RecordShare } from 'src/engine/permissions/record-share/types/record-share.type';
 import { type WorkspaceOrmManager } from 'src/engine/twenty-orm/workspace-orm.manager';
 import { buildSystemAuthContext } from 'src/engine/twenty-orm/utils/build-system-auth-context.util';
 import { WORKSPACE_MEMBER_DATA_SEED_IDS } from 'src/engine/workspace-manager/dev-seeder/data/constants/workspace-member-data-seeds.constant';
@@ -143,15 +148,30 @@ describe('Canonical direct messages through the authenticated API', () => {
         .sort(),
     ).toEqual([context.workspaceMemberId, PEER_WORKSPACE_MEMBER_ID].sort());
 
-    for (const messageId of [firstMessageId, secondMessageId]) {
-      expect(
-        await context.chatService.hasMessage({
-          workspaceId: context.workspaceId,
-          workspaceMemberId: context.workspaceMemberId,
-          threadId: thread.id,
-          messageId,
-        }),
-      ).toBe(true);
+    for (const token of [undefined, APPLE_JONY_MEMBER_ACCESS_TOKEN]) {
+      const messages = await makeMetadataApiRequest(
+        {
+          query: parse(`query Messages($threadId: UUID!) {
+          chatMessages(threadId: $threadId) { id senderWorkspaceMemberId }
+        }`),
+          variables: { threadId: thread.id },
+        },
+        token,
+      );
+
+      expect(messages.body.errors).toBeUndefined();
+      expect(messages.body.data.chatMessages).toEqual(
+        expect.arrayContaining([
+          {
+            id: firstMessageId,
+            senderWorkspaceMemberId: context.workspaceMemberId,
+          },
+          {
+            id: secondMessageId,
+            senderWorkspaceMemberId: PEER_WORKSPACE_MEMBER_ID,
+          },
+        ]),
+      );
     }
 
     const lookup = await lookupDirectMessage({
@@ -203,6 +223,85 @@ describe('Canonical direct messages through the authenticated API', () => {
     expect((await context.readThread(threadId)).lastActivityAt).not.toBeNull();
     expect(await context.readParticipants(threadId)).toHaveLength(2);
   });
+
+  it.each([
+    { name: 'saved', hasSavedHistory: true },
+    { name: 'empty', hasSavedHistory: false },
+  ])(
+    'does not elevate a read-only sender through peer selection for a $name DM',
+    async ({ hasSavedHistory }) => {
+      const identityService =
+        getAppProviderByClassName<AgentChatDirectMessageIdentityService>(
+          'AgentChatDirectMessageIdentityService',
+        );
+      const threadId = context.registerThread(
+        await identityService.getOrCreate({
+          workspaceId: context.workspaceId,
+          firstWorkspaceMemberId: context.workspaceMemberId,
+          secondWorkspaceMemberId: PEER_WORKSPACE_MEMBER_ID,
+        }),
+      );
+
+      if (hasSavedHistory) {
+        const firstSend = await sendChatParticipationMessage({
+          threadId,
+          directMessageWorkspaceMemberId: PEER_WORKSPACE_MEMBER_ID,
+        });
+
+        expect(firstSend.body.errors).toBeUndefined();
+      }
+
+      await global.testDataSource
+        .createQueryBuilder()
+        .delete()
+        .from(`${context.schema}.recordShare`)
+        .where('"recordId" = :threadId', { threadId })
+        .andWhere('"principalId" = :workspaceMemberId', {
+          workspaceMemberId: PEER_WORKSPACE_MEMBER_ID,
+        })
+        .execute();
+      await context.share({
+        threadId,
+        recipientWorkspaceMemberId: PEER_WORKSPACE_MEMBER_ID,
+        accessLevel: RecordShareAccessLevel.READ,
+      });
+
+      const readShares = () =>
+        global.testDataSource
+          .createQueryBuilder()
+          .select('*')
+          .from(`${context.schema}.recordShare`, 'share')
+          .where('"recordId" = :threadId', { threadId })
+          .orderBy('id', 'ASC')
+          .getRawMany<RecordShare>();
+      const previousShares = await readShares();
+      const messageId = randomUUID();
+      const response = await sendChatParticipationMessage({
+        threadId: randomUUID(),
+        messageId,
+        directMessageWorkspaceMemberId: context.workspaceMemberId,
+        token: APPLE_JONY_MEMBER_ACCESS_TOKEN,
+      });
+
+      expect(response.body.errors).toBeDefined();
+      expect(await readShares()).toEqual(previousShares);
+      expect(
+        previousShares.filter(
+          ({ principalId, rowCause }) =>
+            principalId === PEER_WORKSPACE_MEMBER_ID &&
+            rowCause === RecordShareRowCause.OWNER,
+        ),
+      ).toEqual([]);
+      expect(
+        await context.chatService.hasMessage({
+          workspaceId: context.workspaceId,
+          workspaceMemberId: PEER_WORKSPACE_MEMBER_ID,
+          threadId,
+          messageId,
+        }),
+      ).toBe(false);
+    },
+  );
 
   it('allows only the queued message sender to cancel it', async () => {
     const sent = await sendChatParticipationMessage({

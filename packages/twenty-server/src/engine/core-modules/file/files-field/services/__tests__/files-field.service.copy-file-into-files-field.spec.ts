@@ -6,6 +6,7 @@ import { FilesFieldService } from 'src/engine/core-modules/file/files-field/serv
 import { FILE_STATUS } from 'src/engine/core-modules/file/types/file-status.type';
 import { type FieldMetadataEntity } from 'src/engine/metadata-modules/field-metadata/field-metadata.entity';
 import { type WorkspaceScopedRepository } from 'src/engine/twenty-orm/workspace-scoped-repository/workspace-scoped-repository';
+import { type DirectMessageFileAccessService } from 'src/engine/permissions/direct-message/services/direct-message-file-access.service';
 
 describe('FilesFieldService.copyFileIntoFilesField', () => {
   const workspaceId = '20202020-0000-4000-8000-000000000001';
@@ -28,6 +29,9 @@ describe('FilesFieldService.copyFileIntoFilesField', () => {
       fieldMetadataRepository,
       fileRepository,
       {} as FileUrlService,
+      {
+        assertFilesReadableOrThrow: jest.fn().mockResolvedValue(undefined),
+      } as unknown as DirectMessageFileAccessService,
     );
 
   const buildChatFile = (overrides: Partial<FileEntity> = {}) =>

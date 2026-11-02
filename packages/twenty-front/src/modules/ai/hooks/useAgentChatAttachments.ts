@@ -6,11 +6,11 @@ import { getAgentChatAttachmentAtoms } from '@/ai/utils/getAgentChatAttachmentAt
 import { useAtomStateValue } from '@/ui/utilities/state/jotai/hooks/useAtomStateValue';
 
 export const useAgentChatAttachments = () => {
-  const currentThreadId = useAtomStateValue(currentAiChatThreadState);
-  const newThreadId = useAtomStateValue(newAiChatThreadIdState);
+  const currentAiChatThread = useAtomStateValue(currentAiChatThreadState);
+  const newAiChatThreadId = useAtomStateValue(newAiChatThreadIdState);
   const { isDirectMessage } = useAiChatDirectMessage();
   const { selectedFilesAtom, uploadedFilesAtom } = getAgentChatAttachmentAtoms({
-    threadId: currentThreadId ?? newThreadId,
+    threadId: currentAiChatThread ?? newAiChatThreadId,
     isDirectMessage,
   });
   const [selectedFiles, setSelectedFiles] = useAtom(selectedFilesAtom);

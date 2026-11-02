@@ -6,38 +6,11 @@ import {
   type PermissionsRowAccessSqlRequest,
   type SqlCondition,
 } from 'src/engine/permissions/combine/types/row-access-policy.type';
-import { areRecordGrantsHeldToRowLevelPermissions } from 'src/engine/permissions/combine/utils/are-record-grants-held-to-row-level-permissions.util';
+import { buildPermissionsGrantCondition } from 'src/engine/permissions/combine/utils/build-permissions-grant-condition.util';
 import { combineSqlConditions } from 'src/engine/permissions/combine/utils/combine-sql-conditions.util';
-import { resolvePermissionsRowAccessOutcome } from 'src/engine/permissions/combine/utils/resolve-permissions-row-access-outcome.util';
-import { buildPermissionsCreatorCondition } from 'src/engine/permissions/private-record/utils/build-permissions-creator-condition.util';
-import { buildDirectMessagePairCondition } from 'src/engine/permissions/private-record/utils/build-direct-message-pair-condition.util';
-import { isShareOnlyWhilePrivateRecordFlagDisabled } from 'src/engine/permissions/private-record/utils/is-share-only-while-private-record-flag-disabled.util';
-import { buildPermissionsShareCondition } from 'src/engine/permissions/record-share/utils/build-permissions-share-condition.util';
-import { buildPermissionsRlsCondition } from 'src/engine/permissions/rls/utils/build-permissions-rls-condition.util';
-import { resolvePermissionsRowLevelPermissionFilter } from 'src/engine/permissions/rls/utils/resolve-permissions-row-level-permission-filter.util';
-import { buildPermissionsObjectCondition } from 'src/engine/permissions/role/utils/build-permissions-object-condition.util';
+import { buildPermissionsDirectMessageCondition } from 'src/engine/permissions/direct-message/utils/build-permissions-direct-message-condition.util';
 
-const combineWithOr = (conditions: SqlCondition[]): SqlCondition =>
-  conditions.length === 1
-    ? conditions[0]
-    : combineSqlConditions(conditions, 'OR');
-
-const buildPermissionsRoleConditions = (
-  sqlRequest: PermissionsRowAccessSqlRequest,
-): SqlCondition[] | true => {
-  const objectCondition = buildPermissionsObjectCondition(sqlRequest);
-
-  if (objectCondition === true) {
-    return true;
-  }
-
-  return [
-    objectCondition === false ? undefined : objectCondition,
-    buildPermissionsRlsCondition(sqlRequest),
-  ].filter(isDefined);
-};
-
-const buildGrantedPermissionsCondition = ({
+export const buildPermissionsCondition = ({
   tableAlias,
   ...request
 }: Omit<PermissionsRowAccessSqlRequest, 'tableAlias'> & {
@@ -47,67 +20,22 @@ const buildGrantedPermissionsCondition = ({
     ...request,
     tableAlias: tableAlias ?? request.flatObjectMetadata.nameSingular,
   };
-  const outcome = resolvePermissionsRowAccessOutcome(sqlRequest);
+  const grantCondition = buildPermissionsGrantCondition(sqlRequest);
 
-  if (isDefined(outcome)) {
-    return outcome;
-  }
-
-  // TODO(@charlesBochet): remove with isShareOnlyWhilePrivateRecordFlagDisabled after 2.55
-  const roleConditions = isShareOnlyWhilePrivateRecordFlagDisabled(sqlRequest)
-    ? []
-    : buildPermissionsRoleConditions(sqlRequest);
-
-  if (roleConditions === true) {
-    return true;
-  }
-
-  const recordConditions = [
-    buildPermissionsShareCondition(sqlRequest),
-    buildPermissionsCreatorCondition(sqlRequest),
-  ].filter(isDefined);
-  const rowLevelPermissionFilter = areRecordGrantsHeldToRowLevelPermissions(
-    sqlRequest,
-  )
-    ? resolvePermissionsRowLevelPermissionFilter(sqlRequest)
-    : undefined;
-
-  if (isDefined(rowLevelPermissionFilter) && recordConditions.length > 0) {
-    return combineWithOr([
-      ...roleConditions,
-      combineSqlConditions([
-        rowLevelPermissionFilter.condition,
-        combineWithOr(recordConditions),
-      ]),
-    ]);
-  }
-
-  const conditions = [...roleConditions, ...recordConditions];
-
-  return conditions.length === 0 ? false : combineWithOr(conditions);
-};
-
-export const buildPermissionsCondition = (
-  request: Omit<PermissionsRowAccessSqlRequest, 'tableAlias'> & {
-    tableAlias?: string;
-  },
-): SqlCondition | boolean => {
-  const grantedCondition = buildGrantedPermissionsCondition(request);
-
-  if (grantedCondition === false) {
+  if (grantCondition === false) {
     return false;
   }
 
-  const pairCondition = buildDirectMessagePairCondition({
-    ...request,
-    tableAlias: request.tableAlias ?? request.flatObjectMetadata.nameSingular,
-  });
+  const directMessageCondition =
+    buildPermissionsDirectMessageCondition(sqlRequest);
 
-  if (!isDefined(pairCondition)) {
-    return grantedCondition;
+  if (!isDefined(directMessageCondition)) {
+    return grantCondition;
   }
 
-  return grantedCondition === true
-    ? pairCondition
-    : combineSqlConditions([grantedCondition, pairCondition]);
+  if (directMessageCondition === false || grantCondition === true) {
+    return directMessageCondition;
+  }
+
+  return combineSqlConditions([grantCondition, directMessageCondition]);
 };

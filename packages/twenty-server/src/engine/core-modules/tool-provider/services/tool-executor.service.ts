@@ -168,6 +168,7 @@ export class ToolExecutorService {
             objectNameSingular: ref.objectNameSingular,
             records: [args],
             workspaceId: context.workspaceId,
+            authContext,
           });
 
         const output = await this.createRecordService.execute({
@@ -188,6 +189,7 @@ export class ToolExecutorService {
             objectNameSingular: ref.objectNameSingular,
             records: args.records as Record<string, unknown>[],
             workspaceId: context.workspaceId,
+            authContext,
           });
 
         const output = await this.createManyRecordsService.execute({
@@ -213,6 +215,7 @@ export class ToolExecutorService {
             objectNameSingular: ref.objectNameSingular,
             records: [objectRecord],
             workspaceId: context.workspaceId,
+            authContext,
           });
 
         const output = await this.updateRecordService.execute({
@@ -243,6 +246,7 @@ export class ToolExecutorService {
             objectNameSingular: ref.objectNameSingular,
             records: args.records as Record<string, unknown>[],
             workspaceId: context.workspaceId,
+            authContext,
           });
 
         const output = await this.upsertManyRecordsService.execute({

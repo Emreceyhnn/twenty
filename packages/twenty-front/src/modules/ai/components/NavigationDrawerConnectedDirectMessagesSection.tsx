@@ -16,7 +16,6 @@ import { currentWorkspaceMemberState } from '@/auth/states/currentWorkspaceMembe
 import { currentWorkspaceMembersState } from '@/auth/states/currentWorkspaceMembersState';
 import { currentWorkspaceState } from '@/auth/states/currentWorkspaceState';
 import { NavigationDrawerItem } from '@/ui/navigation/navigation-drawer/components/NavigationDrawerItem';
-import { TriggerEventType } from '@/ui/navigation/types/TriggerEventType';
 import { useAtomStateValue } from '@/ui/utilities/state/jotai/hooks/useAtomStateValue';
 import { getWorkspaceMemberNameOrEmail } from '@/workspace-member/utils/getWorkspaceMemberNameOrEmail';
 import { getAbsoluteImageUrl } from '~/utils/image/getAbsoluteImageUrl';
@@ -25,33 +24,38 @@ import { filterBySearchQuery } from '~/utils/filterBySearchQuery';
 export const NavigationDrawerConnectedDirectMessagesSection = () => {
   const { t } = useLingui();
   const [searchValue, setSearchValue] = useState('');
-  const currentMember = useAtomStateValue(currentWorkspaceMemberState);
-  const workspace = useAtomStateValue(currentWorkspaceState);
-  const members = useAtomStateValue(currentWorkspaceMembersState);
-  const directMessages = useAtomStateValue(
+  const currentWorkspaceMember = useAtomStateValue(currentWorkspaceMemberState);
+  const currentWorkspace = useAtomStateValue(currentWorkspaceState);
+  const currentWorkspaceMembers = useAtomStateValue(
+    currentWorkspaceMembersState,
+  );
+  const agentChatDirectMessageSidebarItems = useAtomStateValue(
     agentChatDirectMessageSidebarItemsSelector,
   );
-  const currentThreadId = useAtomStateValue(currentAiChatThreadState);
-  const loadedList = useAtomStateValue(agentChatDirectMessageListState);
+  const currentAiChatThread = useAtomStateValue(currentAiChatThreadState);
+  const agentChatDirectMessageList = useAtomStateValue(
+    agentChatDirectMessageListState,
+  );
   const list =
-    loadedList?.workspaceId === workspace?.id &&
-    loadedList?.workspaceMemberId === currentMember?.id
-      ? loadedList
+    agentChatDirectMessageList?.workspaceId === currentWorkspace?.id &&
+    agentChatDirectMessageList?.workspaceMemberId === currentWorkspaceMember?.id
+      ? agentChatDirectMessageList
       : null;
-  const loadingRequest = useAtomStateValue(
+  const agentChatDirectMessageListLoading = useAtomStateValue(
     agentChatDirectMessageListLoadingState,
   );
   const isLoading =
-    isDefined(loadingRequest) &&
-    loadingRequest.workspaceId === workspace?.id &&
-    loadingRequest.workspaceMemberId === currentMember?.id;
+    isDefined(agentChatDirectMessageListLoading) &&
+    agentChatDirectMessageListLoading.workspaceId === currentWorkspace?.id &&
+    agentChatDirectMessageListLoading.workspaceMemberId ===
+      currentWorkspaceMember?.id;
   const { loadDirectMessages } = useLoadDirectMessages();
   const { openDirectMessage, isOpening } = useOpenDirectMessage();
   const { handleThreadClick } = useAiChatThreadClick({
     shouldOpenInFullPage: true,
   });
   const humanMembers = filterBySearchQuery({
-    items: members.map((member) => ({
+    items: currentWorkspaceMembers.map((member) => ({
       workspaceMemberId: member.id,
       name: getWorkspaceMemberNameOrEmail(member),
       avatarUrl: getAbsoluteImageUrl(member.avatarUrl),
@@ -61,7 +65,7 @@ export const NavigationDrawerConnectedDirectMessagesSection = () => {
     getSearchableValues: ({ name, email }) => [name, email],
   });
 
-  if (!isDefined(currentMember)) {
+  if (!isDefined(currentWorkspaceMember)) {
     return null;
   }
 
@@ -69,13 +73,13 @@ export const NavigationDrawerConnectedDirectMessagesSection = () => {
     <>
       <DirectMessagesLoadEffect />
       <NavigationDrawerDirectMessagesSection
-        directMessages={directMessages}
-        currentThreadId={currentThreadId}
+        directMessages={agentChatDirectMessageSidebarItems}
+        currentThreadId={currentAiChatThread}
         onSelect={(id) => handleThreadClick({ id })}
         memberPicker={
           <DirectMessageMemberPicker
             humanMembers={humanMembers}
-            currentWorkspaceMemberId={currentMember.id}
+            currentWorkspaceMemberId={currentWorkspaceMember.id}
             searchValue={searchValue}
             onSearchChange={setSearchValue}
             isLoading={isOpening}
@@ -97,7 +101,7 @@ export const NavigationDrawerConnectedDirectMessagesSection = () => {
                   isDefined(list) ? 'fetch-more' : 'refresh',
                 )
               }
-              triggerEvent={TriggerEventType.CLICK}
+              triggerEvent="CLICK"
               preventCollapseOnMobile
             />
           )

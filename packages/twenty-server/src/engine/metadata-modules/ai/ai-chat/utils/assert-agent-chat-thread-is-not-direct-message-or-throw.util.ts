@@ -1,20 +1,22 @@
 import { msg } from '@lingui/core/macro';
+import { doNotTranslate } from 'twenty-shared/i18n';
 
-import { type AgentChatThreadWorkspaceEntity } from 'src/engine/metadata-modules/ai/ai-history/standard-objects/agent-chat-thread.workspace-entity';
+import { type DirectMessageThreadPair } from 'src/engine/permissions/direct-message/types/direct-message-thread-pair.type';
+import { hasDirectMessageThreadIdentity } from 'src/engine/permissions/direct-message/utils/has-direct-message-thread-identity.util';
 import {
   AiException,
   AiExceptionCode,
 } from 'src/engine/metadata-modules/ai/ai.exception';
 
 export const assertAgentChatThreadIsNotDirectMessageOrThrow = (
-  thread: Pick<AgentChatThreadWorkspaceEntity, 'conversationType'>,
+  thread: DirectMessageThreadPair,
 ): void => {
-  if (thread.conversationType !== 'DIRECT_MESSAGE') {
+  if (!hasDirectMessageThreadIdentity(thread)) {
     return;
   }
 
   throw new AiException(
-    'This operation cannot change a canonical direct message',
+    doNotTranslate('This operation cannot change a canonical direct message'),
     AiExceptionCode.INVALID_AGENT_INPUT,
     {
       userFriendlyMessage: msg`This action is not available for direct messages.`,

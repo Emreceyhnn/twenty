@@ -14,6 +14,7 @@ import { type FlatRowLevelPermissionPredicateGroupMaps } from 'src/engine/metada
 import { type FlatRowLevelPermissionPredicateMaps } from 'src/engine/metadata-modules/row-level-permission-predicate/types/flat-row-level-permission-predicate-maps.type';
 import { type ApplicationDefaultRoleMaps } from 'src/engine/permissions/principal/types/application-default-role-maps.type';
 import { type PermissionsPrincipalsWithRolesContext } from 'src/engine/permissions/principal/types/permissions-principals-with-roles-context.type';
+import { type DirectMessageThreadPair } from 'src/engine/permissions/direct-message/types/direct-message-thread-pair.type';
 import { type PrivateRecordState } from 'src/engine/permissions/private-record/types/private-record-state.type';
 import { type RecordShareGrant } from 'src/engine/permissions/record-share/types/record-share-grant.type';
 import { type OperationType } from 'src/engine/permissions/role/utils/validate-operation-is-permitted-or-throw.util';
@@ -48,10 +49,6 @@ export type RowAccessRecord = { id: string } & Record<string, unknown>;
 
 export type RowAccessEvaluationContext = {
   shouldIgnoreSoftDeleteDefaultFilter: boolean;
-  findRelatedRecords?: (args: {
-    objectNameSingular: string;
-    recordIds: string[];
-  }) => Promise<RowAccessRecord[]>;
   fetchRecordShares: (args: {
     objectMetadataId: string;
     recordIds: string[];
@@ -60,6 +57,17 @@ export type RowAccessEvaluationContext = {
     objectMetadataId: string;
     recordIds: string[];
   }) => Promise<Map<string, PrivateRecordState>>;
+  findDirectMessageThreadPairs: (args: {
+    threadIds: string[];
+  }) => Promise<Map<string, DirectMessageThreadPair>>;
+  findAgentChatMessageThreadIds: (args: {
+    messageIds: string[];
+  }) => Promise<Map<string, string>>;
+  findAdmittedDirectMessageThreadIds: (args: {
+    threadIds: string[];
+    principal: PermissionsPrincipalsWithRolesContext;
+    operationType: OperationType;
+  }) => Promise<Set<string>>;
 };
 
 export type PermissionsRowAccessEvaluationRequest =

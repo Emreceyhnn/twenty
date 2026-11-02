@@ -1,12 +1,13 @@
 import { Inject, Injectable } from '@nestjs/common';
 
+import { doNotTranslate } from 'twenty-shared/i18n';
 import {
   FeatureFlagKey,
   RecordShareAccessLevel,
   RecordSharePrincipalType,
   RecordShareRowCause,
 } from 'twenty-shared/types';
-import { isDefined } from 'twenty-shared/utils';
+import { isDefined, isNonEmptyArray } from 'twenty-shared/utils';
 
 import { AgentChatDirectMessageIdentityService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-direct-message-identity.service';
 import { AgentChatSharingService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-sharing.service';
@@ -21,8 +22,10 @@ import {
   AiException,
   AiExceptionCode,
 } from 'src/engine/metadata-modules/ai/ai.exception';
+import { type FlatObjectMetadata } from 'src/engine/metadata-modules/flat-object-metadata/types/flat-object-metadata.type';
 import { RecordAccessPolicyService } from 'src/engine/permissions/combine/services/record-access-policy.service';
 import { RecordShareStorageService } from 'src/engine/permissions/record-share/services/record-share-storage.service';
+import { type WorkspaceTransactionScope } from 'src/engine/twenty-orm/types/workspace-transaction-scope.type';
 import { buildSystemAuthContext } from 'src/engine/twenty-orm/utils/build-system-auth-context.util';
 import { WorkspaceOrmManager } from 'src/engine/twenty-orm/workspace-orm.manager';
 import { WorkspaceCacheService } from 'src/engine/workspace-cache/services/workspace-cache.service';
@@ -133,54 +136,33 @@ export class AgentChatDirectMessageService {
         'agentChatThread',
       ) ?? throwAgentChatThreadNotFound();
 
-    for (const workspaceMemberId of memberIds) {
-      for (const operationType of ['select', 'update'] as const) {
-        const hasAccess =
-          await this.recordAccessPolicyService.hasAccessToRecords({
-            principals: {
-              workspaceId: args.workspaceId,
-              mainPrincipal: { workspaceMemberId },
-              applicationPrincipal: { isCustomApp: true },
-            },
-            flatObjectMetadata,
-            recordIds: [threadId],
-            operationType,
-            hypotheticalRecordShareAccessLevel: RecordShareAccessLevel.FULL,
-          });
-
-        if (!hasAccess) {
-          throwAgentChatThreadNotFound();
-        }
-      }
-    }
-
     await this.workspaceOrmManager.executeInWorkspaceContext(
       () =>
-        this.workspaceOrmManager.runInWorkspaceTransaction((transactionScope) =>
-          this.recordShareStorageService.insertMany({
-            workspaceId: args.workspaceId,
-            transactionScope,
-            recordShares: memberIds.map((workspaceMemberId) => ({
-              recordId: threadId,
-              objectMetadataId: flatObjectMetadata.id,
-              principalId: workspaceMemberId,
-              principalType: RecordSharePrincipalType.WORKSPACE_MEMBER,
-              accessLevel: RecordShareAccessLevel.FULL,
-              rowCause: RecordShareRowCause.OWNER,
-              sourceId: threadId,
-            })),
-          }),
+        this.workspaceOrmManager.runInWorkspaceTransaction(
+          async (transactionScope) => {
+            await this.sharingService.lockThreadForWriteInTransaction({
+              workspaceId: args.workspaceId,
+              threadId,
+              transactionScope,
+            });
+            await this.initializeEmptyThreadAccess({
+              workspaceId: args.workspaceId,
+              threadId,
+              memberIds,
+              flatObjectMetadata,
+              transactionScope,
+            });
+            await this.sharingService.getThreadWithAccess({
+              workspaceId: args.workspaceId,
+              workspaceMemberId: args.workspaceMemberId,
+              threadId,
+              operationType: 'update',
+              transactionScope,
+            });
+          },
         ),
       buildSystemAuthContext(args.workspaceId),
-      { lite: true },
     );
-
-    await this.sharingService.getThreadWithAccess({
-      workspaceId: args.workspaceId,
-      workspaceMemberId: args.workspaceMemberId,
-      threadId,
-      operationType: 'update',
-    });
 
     return threadId;
   }
@@ -225,7 +207,9 @@ export class AgentChatDirectMessageService {
 
     if (isDefined(channelId) || isDefined(thread.channelId) || hasOutsider) {
       throw new AiException(
-        'Direct messages require exactly their two workspace members and no channel',
+        doNotTranslate(
+          'Direct messages require exactly their two workspace members and no channel',
+        ),
         AiExceptionCode.INVALID_AGENT_INPUT,
       );
     }
@@ -236,6 +220,87 @@ export class AgentChatDirectMessageService {
     });
 
     return [peerWorkspaceMemberId];
+  }
+
+  private async initializeEmptyThreadAccess({
+    workspaceId,
+    threadId,
+    memberIds,
+    flatObjectMetadata,
+    transactionScope,
+  }: {
+    workspaceId: string;
+    threadId: string;
+    memberIds: string[];
+    flatObjectMetadata: FlatObjectMetadata;
+    transactionScope: WorkspaceTransactionScope;
+  }): Promise<void> {
+    const thread = await transactionScope
+      .getRepository<AgentChatThreadWorkspaceEntity>('agentChatThread', {
+        shouldBypassPermissionChecks: true,
+      })
+      .findOne({ where: { id: threadId }, withDeleted: true });
+
+    if (!isDefined(thread)) {
+      return throwAgentChatThreadNotFound();
+    }
+
+    const existingShares = await this.recordShareStorageService.findByRecordIds(
+      {
+        workspaceId,
+        objectMetadataId: flatObjectMetadata.id,
+        recordIds: [threadId],
+        transactionScope,
+      },
+    );
+
+    if (isDefined(thread.lastActivityAt) || isNonEmptyArray(existingShares)) {
+      return;
+    }
+
+    const hasMessages = await transactionScope
+      .getRepository('agentMessage', { shouldBypassPermissionChecks: true })
+      .exists({ where: { threadId }, withDeleted: true });
+
+    if (hasMessages) {
+      return;
+    }
+
+    for (const workspaceMemberId of memberIds) {
+      for (const operationType of ['select', 'update'] as const) {
+        const hasAccess =
+          await this.recordAccessPolicyService.hasAccessToRecords({
+            principals: {
+              workspaceId,
+              mainPrincipal: { workspaceMemberId },
+              applicationPrincipal: { isCustomApp: true },
+            },
+            flatObjectMetadata,
+            recordIds: [threadId],
+            operationType,
+            hypotheticalRecordShareAccessLevel: RecordShareAccessLevel.FULL,
+            transactionScope,
+          });
+
+        if (!hasAccess) {
+          throwAgentChatThreadNotFound();
+        }
+      }
+    }
+
+    await this.recordShareStorageService.insertMany({
+      workspaceId,
+      transactionScope,
+      recordShares: memberIds.map((workspaceMemberId) => ({
+        recordId: threadId,
+        objectMetadataId: flatObjectMetadata.id,
+        principalId: workspaceMemberId,
+        principalType: RecordSharePrincipalType.WORKSPACE_MEMBER,
+        accessLevel: RecordShareAccessLevel.FULL,
+        rowCause: RecordShareRowCause.OWNER,
+        sourceId: threadId,
+      })),
+    });
   }
 
   private async getPair({
@@ -255,7 +320,7 @@ export class AgentChatDirectMessageService {
       ]
     ) {
       throw new AiException(
-        'Direct messages are not available in this workspace',
+        doNotTranslate('Direct messages are not available in this workspace'),
         AiExceptionCode.CHAT_UPGRADE_IN_PROGRESS,
       );
     }
