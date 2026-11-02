@@ -318,14 +318,7 @@ const reinstallApplicationOrThrow = async (
   return { id: applicationId, token };
 };
 
-describe('Inbox channels managed by an application', () => {
-  const createdChannelIds: string[] = [];
-  const createdThreadIds: string[] = [];
-  let channelManager: ApplicationUnderTest;
-  let otherChannelManager: ApplicationUnderTest;
-  let channelReader: ApplicationUnderTest;
-  let generalChannelId: string;
-
+const buildChannelCreationHelpers = (createdChannelIds: string[]) => {
   const createChannel = async ({
     input,
     token,
@@ -359,6 +352,20 @@ describe('Inbox channels managed by an application', () => {
 
     return response.body.data.createAgentChatChannel.id;
   };
+
+  return { createChannel, createChannelOrThrow };
+};
+
+describe('Inbox channels managed by an application', () => {
+  const createdChannelIds: string[] = [];
+  const createdThreadIds: string[] = [];
+  let channelManager: ApplicationUnderTest;
+  let otherChannelManager: ApplicationUnderTest;
+  let channelReader: ApplicationUnderTest;
+  let generalChannelId: string;
+
+  const { createChannel, createChannelOrThrow } =
+    buildChannelCreationHelpers(createdChannelIds);
 
   const updateChannel = ({
     channelId,
@@ -848,26 +855,8 @@ describe('Uninstalling an application that created inbox channels', () => {
     }
   }, 120_000);
 
-  const createChannelOrThrow = async ({
-    input,
-    token,
-  }: {
-    input: ChannelInput;
-    token: string;
-  }): Promise<string> => {
-    const response = await makeMetadataApiRequest(
-      { query: CREATE_CHANNEL, variables: { input } },
-      token,
-    );
-
-    assertGraphQLSuccessfulResponse(response);
-
-    const channelId = response.body.data.createAgentChatChannel.id;
-
-    createdChannelIds.push(channelId);
-
-    return channelId;
-  };
+  const { createChannelOrThrow } =
+    buildChannelCreationHelpers(createdChannelIds);
 
   const createThreadInChannel = async (channelId: string): Promise<string> => {
     const response = await makeMetadataApiRequest({
