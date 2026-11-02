@@ -6,7 +6,7 @@ import {
   isNonEmptyArray,
   removeUndefinedFields,
 } from 'twenty-shared/utils';
-import { DataSource, In } from 'typeorm';
+import { DataSource, In, Not } from 'typeorm';
 import { v4 } from 'uuid';
 
 import { ApplicationService } from 'src/engine/core-modules/application/application.service';
@@ -304,6 +304,7 @@ export class AgentChatChannelMetadataService {
             applicationId: workspaceCustomFlatApplication.id,
             retainedApplicationUniversalIdentifier:
               applicationUniversalIdentifier,
+            retainedApplicationId: applicationId,
           })
           .where({
             workspaceId,
@@ -394,10 +395,14 @@ export class AgentChatChannelMetadataService {
     const isRetainedByCallingApplication =
       channel.retainedApplicationUniversalIdentifier ===
       ownerFlatApplication.universalIdentifier;
+    const isRetainedByAnotherInstallation =
+      isDefined(channel.retainedApplicationId) &&
+      channel.retainedApplicationId !== ownerFlatApplication.id;
 
     if (
       channel.applicationId === ownerFlatApplication.id ||
-      !isRetainedByCallingApplication
+      !isRetainedByCallingApplication ||
+      !isRetainedByAnotherInstallation
     ) {
       return channel;
     }
@@ -416,6 +421,7 @@ export class AgentChatChannelMetadataService {
         applicationId: workspaceCustomFlatApplication.id,
         retainedApplicationUniversalIdentifier:
           ownerFlatApplication.universalIdentifier,
+        retainedApplicationId: Not(ownerFlatApplication.id),
       },
       { applicationId: ownerFlatApplication.id },
     );
@@ -465,6 +471,7 @@ export class AgentChatChannelMetadataService {
           navigationMenuItemUniversalIdentifiers: [],
           applicationUniversalIdentifier,
           retainedApplicationUniversalIdentifier: null,
+          retainedApplicationId: null,
           createdAt: now,
           updatedAt: now,
         },

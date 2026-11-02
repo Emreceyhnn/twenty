@@ -13,7 +13,6 @@ import {
   setupApplicationWithResources,
 } from 'test/integration/metadata/suites/application/utils/setup-application-with-resources.util';
 import { syncApplication } from 'test/integration/metadata/suites/application/utils/sync-application.util';
-import { uninstallApplication } from 'test/integration/metadata/suites/application/utils/uninstall-application.util';
 import { uploadApplicationFile } from 'test/integration/metadata/suites/application/utils/upload-application-file.util';
 import { findOneRoleByLabel } from 'test/integration/metadata/suites/role/utils/find-one-role-by-label.util';
 import { makeMetadataApiRequest } from 'test/integration/metadata/suites/utils/make-metadata-api-request.util';
@@ -893,12 +892,36 @@ describe('Uninstalling an application that created inbox channels', () => {
       uninstalledApplication.roleId,
     );
 
-    const { errors } = await uninstallApplication({
-      universalIdentifier:
+    await getAppProviderByClassName<ApplicationSyncService>(
+      'ApplicationSyncService',
+    ).uninstallApplication({
+      workspaceId: SEED_APPLE_WORKSPACE_ID,
+      applicationUniversalIdentifier:
         uninstalledApplication.application.universalIdentifier,
+      progressReporter: {
+        reportStepCompleted: async (step) => {
+          if (step !== 'COMPUTE_METADATA_TO_DELETE') {
+            return;
+          }
+
+          const response = await makeMetadataApiRequest(
+            {
+              query: CREATE_CHANNEL,
+              variables: {
+                input: { name: buildChannelName(), universalIdentifier },
+              },
+            },
+            uninstalledApplication.token,
+          );
+
+          expect(response.body.errors[0].extensions).toMatchObject({
+            code: 'CONFLICT',
+            subCode: AiExceptionCode.CHAT_CHANNEL_UNIVERSAL_IDENTIFIER_TAKEN,
+          });
+        },
+      },
     });
 
-    expect(errors).toBeUndefined();
     expect(await readChannelApplicationId(channelId)).toBe(
       workspaceCustomApplicationId,
     );

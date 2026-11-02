@@ -35,6 +35,7 @@ export const buildStandardFlatAgentChatChannelMaps = ({
         applicationId: twentyStandardApplicationId,
         applicationUniversalIdentifier:
           TWENTY_STANDARD_APPLICATION.universalIdentifier,
+        retainedApplicationId: null,
         retainedApplicationUniversalIdentifier: null,
         createdAt: now,
         updatedAt: now,
