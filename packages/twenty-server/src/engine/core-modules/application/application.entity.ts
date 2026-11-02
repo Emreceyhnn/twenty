@@ -141,7 +141,7 @@ export class ApplicationEntity extends WorkspaceRelatedEntity {
   @Column({ type: 'jsonb', nullable: false, default: [] })
   @WasIntroducedInUpgrade({
     upgradeCommandName:
-      '2.55.0_AddApplicationGrantedIframeMediaPermissionsFastInstanceCommand_1793617564524',
+      '2.55.0_AddApplicationGrantedIframeMediaPermissionsFastInstanceCommand_1793636066000',
   })
   grantedIframeMediaPermissions: IframeMediaPermission[];
 
