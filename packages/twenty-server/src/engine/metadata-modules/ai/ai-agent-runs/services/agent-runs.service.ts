@@ -1,8 +1,13 @@
 import { Injectable } from '@nestjs/common';
 
 import groupBy from 'lodash.groupby';
+import { doNotTranslate } from 'twenty-shared/i18n';
+import { isNonEmptyArray } from 'twenty-shared/utils';
 import { In } from 'typeorm';
 
+import { type WorkspaceAuthContext } from 'src/engine/core-modules/auth/types/workspace-auth-context.type';
+import { findAuthorizedAgentRunTurns } from 'src/engine/metadata-modules/ai/ai-agent-runs/utils/find-authorized-agent-run-turns.util';
+import { WorkspaceOrmManager } from 'src/engine/twenty-orm/workspace-orm.manager';
 import { AGENT_RUNS_MAX_LIMIT } from 'src/engine/metadata-modules/ai/ai-agent-runs/constants/agent-runs-max-limit.constant';
 import { type AgentRunDTO } from 'src/engine/metadata-modules/ai/ai-agent-runs/dtos/agent-run.dto';
 import { mapAgentTurnToAgentRun } from 'src/engine/metadata-modules/ai/ai-agent-runs/utils/map-agent-turn-to-agent-run.util';
@@ -21,48 +26,49 @@ export class AgentRunsService {
     private readonly messageRepository: AgentHistoryRepository<AgentMessageWorkspaceEntity>,
     @InjectAgentHistoryRepository('agentMessagePart')
     private readonly messagePartRepository: AgentHistoryRepository<AgentMessagePartWorkspaceEntity>,
+    private readonly workspaceOrmManager: WorkspaceOrmManager,
   ) {}
 
   // tool inputs and outputs can be large, so parts are read without them
   async findAgentRuns({
-    workspaceId,
+    authContext,
     agentId,
     limit,
   }: {
-    workspaceId: string;
+    authContext: WorkspaceAuthContext;
     agentId: string;
     limit: number;
   }): Promise<AgentRunDTO[]> {
-    const turns = await this.turnRepository.find(workspaceId, {
-      where: { agentId },
-      order: { createdAt: 'DESC', id: 'DESC' },
-      take: Math.min(Math.max(limit, 1), AGENT_RUNS_MAX_LIMIT),
-      relations: { thread: true },
+    const workspaceId = authContext.workspace.id;
+    const turns = await findAuthorizedAgentRunTurns({
+      authContext,
+      agentId,
+      limit: Math.min(Math.max(limit, 1), AGENT_RUNS_MAX_LIMIT),
+      turnRepository: this.turnRepository,
+      workspaceOrmManager: this.workspaceOrmManager,
     });
 
-    const messages =
-      turns.length > 0
-        ? await this.messageRepository.find(workspaceId, {
-            where: { turnId: In(turns.map((turn) => turn.id)) },
-            select: ['id', 'turnId', 'role', 'agentId', 'createdAt'],
-            order: { createdAt: 'ASC' },
-          })
-        : [];
+    const messages = isNonEmptyArray(turns)
+      ? await this.messageRepository.find(workspaceId, {
+          where: { turnId: In(turns.map((turn) => turn.id)) },
+          select: ['id', 'turnId', 'role', 'agentId', 'createdAt'],
+          order: { createdAt: doNotTranslate('ASC') },
+        })
+      : [];
 
-    const parts =
-      messages.length > 0
-        ? await this.messagePartRepository.find(workspaceId, {
-            where: { messageId: In(messages.map((message) => message.id)) },
-            select: [
-              'id',
-              'messageId',
-              'orderIndex',
-              'type',
-              'textContent',
-              'toolName',
-            ],
-          })
-        : [];
+    const parts = isNonEmptyArray(messages)
+      ? await this.messagePartRepository.find(workspaceId, {
+          where: { messageId: In(messages.map((message) => message.id)) },
+          select: [
+            'id',
+            'messageId',
+            'orderIndex',
+            'type',
+            'textContent',
+            'toolName',
+          ],
+        })
+      : [];
 
     const partsByMessageId = groupBy(parts, (part) => part.messageId);
     const messagesByTurnId = groupBy(messages, (message) => message.turnId);

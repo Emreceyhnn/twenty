@@ -1,13 +1,14 @@
 import { msg } from '@lingui/core/macro';
 import { isNonEmptyString, isObject } from '@sniptt/guards';
 import { QUERY_MAX_RECORDS } from 'twenty-shared/constants';
+import { STANDARD_OBJECTS } from 'twenty-shared/metadata';
 import {
   type ObjectRecord,
   type ObjectsPermissions,
   type ObjectsPermissionsByRoleId,
   type RecordShareAccessLevel,
 } from 'twenty-shared/types';
-import { isDefined } from 'twenty-shared/utils';
+import { isDefined, isNonEmptyArray } from 'twenty-shared/utils';
 import {
   DeleteResult,
   In,
@@ -24,6 +25,13 @@ import { type WorkspaceAuthContext } from 'src/engine/core-modules/auth/types/wo
 import { isRecordStockTrackedObject } from 'src/engine/core-modules/usage-limit/utils/is-record-stock-tracked-object.util';
 import { findFlatEntityByIdInFlatEntityMaps } from 'src/engine/metadata-modules/flat-entity/utils/find-flat-entity-by-id-in-flat-entity-maps.util';
 import { type FlatObjectMetadata } from 'src/engine/metadata-modules/flat-object-metadata/types/flat-object-metadata.type';
+import { type AgentChatThreadWorkspaceEntity } from 'src/engine/metadata-modules/ai/ai-history/standard-objects/agent-chat-thread.workspace-entity';
+import { type AgentMessageWorkspaceEntity } from 'src/engine/metadata-modules/ai/ai-history/standard-objects/agent-message.workspace-entity';
+import { findDirectMessageThreadPairs } from 'src/engine/permissions/direct-message/utils/find-direct-message-thread-pairs.util';
+import { findAgentChatMessageThreadIds } from 'src/engine/permissions/direct-message/utils/find-agent-chat-message-thread-ids.util';
+import { findDirectMessagePermissionObject } from 'src/engine/permissions/direct-message/utils/find-direct-message-permission-object.util';
+import { validateDirectMessageRecordsForWrite } from 'src/engine/permissions/direct-message/utils/validate-direct-message-records-for-write.util';
+import { validateDirectMessageRecordTargets } from 'src/engine/permissions/direct-message/utils/validate-direct-message-record-targets.util';
 import {
   PermissionsException,
   PermissionsExceptionCode,
@@ -1061,6 +1069,11 @@ export class WorkspaceRepository<TEntity extends ObjectLiteral = ObjectRecord> {
     });
 
     if (!this.options.shouldBypassPermissionChecks) {
+      await this.validateDirectMessageWrites({
+        records: formattedRecords,
+        operationType: 'insert',
+      });
+
       validateRLSPredicatesForRecords({
         records: this.formatResult<ObjectRecord[]>(formattedRecords),
         objectMetadata: this.options.flatObjectMetadata,
@@ -1214,6 +1227,16 @@ export class WorkspaceRepository<TEntity extends ObjectLiteral = ObjectRecord> {
         })),
       ),
     );
+
+    await this.validateDirectMessageWrites({
+      records: setColumnsByInputIndex.flatMap((setColumns, index) =>
+        rawBeforeByInputIndex[index].map((rawRecordBefore) => ({
+          ...rawRecordBefore,
+          ...setColumns,
+        })),
+      ),
+      operationType: 'update',
+    });
 
     for (const [index, input] of writableInputs.entries()) {
       const setColumns = setColumnsByInputIndex[index];
@@ -1605,6 +1628,14 @@ export class WorkspaceRepository<TEntity extends ObjectLiteral = ObjectRecord> {
     }
 
     if (kind === 'update' && isDefined(setColumns)) {
+      await this.validateDirectMessageWrites({
+        records: recordsBefore.map((recordBefore) => ({
+          ...recordBefore,
+          ...setColumns,
+        })),
+        operationType: 'update',
+      });
+
       await this.validateRLSPredicatesForUpdatedRecords(
         recordsBefore.map((rawRecordBefore) => ({
           rawRecordBefore,
@@ -1811,9 +1842,45 @@ export class WorkspaceRepository<TEntity extends ObjectLiteral = ObjectRecord> {
     let privateRecordStates:
       | Promise<Map<string, PrivateRecordState>>
       | undefined;
+    const metadataMaps = this.resolvePermissionsMetadataMaps();
+    const threadRepository =
+      this.getBypassingRepositoryForObjectUniversalIdentifier<AgentChatThreadWorkspaceEntity>(
+        STANDARD_OBJECTS.agentChatThread.universalIdentifier,
+      );
+    const messageRepository =
+      this.getBypassingRepositoryForObjectUniversalIdentifier<AgentMessageWorkspaceEntity>(
+        STANDARD_OBJECTS.agentMessage.universalIdentifier,
+      );
 
     return {
       shouldIgnoreSoftDeleteDefaultFilter: false,
+      findDirectMessageThreadPairs: ({ threadIds }) =>
+        isDefined(threadRepository)
+          ? findDirectMessageThreadPairs({
+              repository: threadRepository,
+              metadataMaps,
+              threadIds,
+            })
+          : Promise.resolve(new Map()),
+      findAgentChatMessageThreadIds: ({ messageIds }) =>
+        isDefined(messageRepository)
+          ? findAgentChatMessageThreadIds({
+              repository: messageRepository,
+              messageIds,
+            })
+          : Promise.resolve(new Map()),
+      findAdmittedDirectMessageThreadIds: async ({
+        threadIds,
+        principal,
+        operationType,
+      }) =>
+        isDefined(threadRepository)
+          ? threadRepository.findPrincipalAdmittedRecordIds({
+              principal,
+              recordIds: threadIds,
+              operationType,
+            })
+          : new Set(),
       fetchRecordShares: async ({
         objectMetadataId,
         recordIds: requestedRecordIds,
@@ -1836,6 +1903,98 @@ export class WorkspaceRepository<TEntity extends ObjectLiteral = ObjectRecord> {
       findPrivateRecordStates: async () =>
         (privateRecordStates ??= this.selectPrivateRecordStates(recordIds)),
     };
+  }
+
+  private getBypassingRepositoryForObjectUniversalIdentifier<
+    TRecord extends ObjectLiteral,
+  >(
+    objectUniversalIdentifier: string,
+  ): WorkspaceRepository<TRecord> | undefined {
+    const objectMetadata =
+      this.options.internalContext.flatObjectMetadataMaps.byUniversalIdentifier[
+        objectUniversalIdentifier
+      ];
+
+    if (!isDefined(objectMetadata)) {
+      return undefined;
+    }
+
+    const repository = this.options.getRepositoryForObjectMetadataId<TRecord>(
+      objectMetadata.id,
+    );
+
+    return new WorkspaceRepository<TRecord>({
+      ...repository.options,
+      shouldBypassPermissionChecks: true,
+    });
+  }
+
+  private async validateDirectMessageWrites({
+    records,
+    operationType,
+  }: {
+    records: Record<string, unknown>[];
+    operationType: OperationType;
+  }): Promise<void> {
+    if (
+      this.options.shouldBypassPermissionChecks ||
+      !isNonEmptyArray(records)
+    ) {
+      return;
+    }
+
+    const metadataMaps = this.resolvePermissionsMetadataMaps();
+
+    const objectName = findDirectMessagePermissionObject({
+      metadataMaps,
+      flatObjectMetadata: this.options.flatObjectMetadata,
+    });
+
+    if (!isDefined(objectName)) {
+      return;
+    }
+
+    const formattedRecords = this.formatResult<ObjectRecord[]>(records).map(
+      (record, index) => ({
+        ...record,
+        id: isNonEmptyString(record.id) ? record.id : String(index),
+      }),
+    );
+
+    const context = this.buildWriteRowAccessEvaluationContext(
+      formattedRecords.map(({ id }) => id),
+    );
+
+    await validateDirectMessageRecordsForWrite({
+      principal: this.resolvePermissionsPrincipalOrThrow(),
+      metadataMaps,
+      flatObjectMetadata: this.options.flatObjectMetadata,
+      operationType,
+      records: formattedRecords,
+      context,
+    });
+
+    if (objectName !== 'agentChatThreadTarget') {
+      return;
+    }
+
+    await validateDirectMessageRecordTargets({
+      records: formattedRecords,
+      context,
+      targetRelations: Object.values(
+        this.options.tableShape.relationShapeByFieldName,
+      ).filter(({ fieldName }) => fieldName !== 'thread'),
+      findReadableRecordIds: async ({ objectMetadataId, recordIds }) => {
+        const repository =
+          this.options.getRepositoryForObjectMetadataId(objectMetadataId);
+        const readableRecords = await repository.find({
+          where: { id: In(recordIds) },
+          select: { id: true },
+        });
+
+        return new Set(readableRecords.map(({ id }) => id));
+      },
+    });
   }
 
   private async selectPrivateRecordStates(

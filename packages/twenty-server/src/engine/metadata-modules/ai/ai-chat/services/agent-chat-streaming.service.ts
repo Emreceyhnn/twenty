@@ -51,6 +51,10 @@ import { InjectWorkspaceScopedRepository } from 'src/engine/twenty-orm/workspace
 import { WorkspaceScopedRepository } from 'src/engine/twenty-orm/workspace-scoped-repository/workspace-scoped-repository';
 import { AgentTurnStatus } from 'src/engine/metadata-modules/ai/ai-history/enums/agent-turn-status.enum';
 import { AgentTurnRecorderService } from 'src/engine/metadata-modules/ai/ai-history/services/agent-turn-recorder.service';
+import { DirectMessageFileAccessService } from 'src/engine/permissions/direct-message/services/direct-message-file-access.service';
+import { UserWorkspaceAuthContextService } from 'src/engine/core-modules/user-workspace/services/user-workspace-auth-context.service';
+import { isUserAuthContext } from 'src/engine/core-modules/auth/guards/is-user-auth-context.guard';
+import { workspaceAuthContextStorage } from 'src/engine/core-modules/auth/storage/workspace-auth-context.storage';
 
 type MemberMessageOptions = {
   thread: AgentChatThreadWorkspaceEntity;
@@ -90,6 +94,8 @@ export class AgentChatStreamingService {
     private readonly agentRunSuspensionService: AgentRunSuspensionService,
     private readonly threadLifecycleService: AgentChatThreadLifecycleService,
     private readonly sharingService: AgentChatSharingService,
+    private readonly directMessageFileAccessService: DirectMessageFileAccessService,
+    private readonly userWorkspaceAuthContextService: UserWorkspaceAuthContextService,
   ) {}
 
   // a message sent while a reply or a run streams in the conversation waits in its queue
@@ -507,10 +513,11 @@ export class AgentChatStreamingService {
     const threadId = thread.id;
     const workspaceId = workspace.id;
 
-    const fileParts = await this.buildFilePartsFromAttachments(
+    const fileParts = await this.buildFilePartsFromAttachments({
       fileAttachments,
       workspaceId,
-    );
+      workspaceMemberId,
+    });
 
     const savedMessage =
       await this.agentChatService.addMessageAndResolveMention({
@@ -775,15 +782,37 @@ export class AgentChatStreamingService {
     ];
   }
 
-  private async buildFilePartsFromAttachments(
-    fileAttachments: AiChatFileAttachment[] | undefined,
-    workspaceId: string,
-  ): Promise<ExtendedUIMessagePart[]> {
-    if (!fileAttachments || fileAttachments.length === 0) {
+  private async buildFilePartsFromAttachments({
+    fileAttachments,
+    workspaceId,
+    workspaceMemberId,
+  }: {
+    fileAttachments: AiChatFileAttachment[] | undefined;
+    workspaceId: string;
+    workspaceMemberId: string;
+  }): Promise<ExtendedUIMessagePart[]> {
+    if (!isNonEmptyArray(fileAttachments)) {
       return [];
     }
 
     const fileIds = fileAttachments.map((attachment) => attachment.id);
+    const storedAuthContext = workspaceAuthContextStorage.getStore();
+    const hasMatchingUserContext =
+      isDefined(storedAuthContext) &&
+      isUserAuthContext(storedAuthContext) &&
+      storedAuthContext.workspace.id === workspaceId &&
+      storedAuthContext.workspaceMemberId === workspaceMemberId;
+
+    await this.directMessageFileAccessService.assertFilesReadableOrThrow({
+      workspaceId,
+      fileIds,
+      authContext: hasMatchingUserContext
+        ? storedAuthContext
+        : await this.userWorkspaceAuthContextService.resolveWorkspaceMember({
+            workspaceId,
+            workspaceMemberId,
+          }),
+    });
 
     const validFiles = await this.fileRepository.find(workspaceId, {
       where: {
