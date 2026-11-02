@@ -292,6 +292,12 @@ export enum AggregateOperations {
   SUM = 'SUM'
 }
 
+export enum AiChatAssistantMode {
+  AUTOMATIC = 'AUTOMATIC',
+  MENTION_ONLY = 'MENTION_ONLY',
+  NEVER = 'NEVER'
+}
+
 export type AiChatUsage = {
   __typename?: 'AiChatUsage';
   consumedValue?: Maybe<Scalars['BigInt']['output']>;
@@ -7839,6 +7845,8 @@ export type UpdateWorkspaceIframeMediaPermissionsInput = {
 export type UpdateWorkspaceInput = {
   aiAdditionalInstructions?: InputMaybe<Scalars['String']['input']>;
   aiAgentModelTier?: InputMaybe<AiModelTier>;
+  aiChatDirectMessageAssistantMode?: InputMaybe<AiChatAssistantMode>;
+  aiChatInboxAssistantMode?: InputMaybe<AiChatAssistantMode>;
   aiChatModelTier?: InputMaybe<AiModelTier>;
   aiEvaluationModelId?: InputMaybe<Scalars['String']['input']>;
   aiModelIdByTier?: InputMaybe<Scalars['JSON']['input']>;
@@ -8618,6 +8626,8 @@ export type Workspace = {
   activationStatus: WorkspaceActivationStatus;
   aiAdditionalInstructions?: Maybe<Scalars['String']['output']>;
   aiAgentModelTier: AiModelTier;
+  aiChatDirectMessageAssistantMode: AiChatAssistantMode;
+  aiChatInboxAssistantMode: AiChatAssistantMode;
   aiChatModelTier: AiModelTier;
   aiEvaluationModelId?: Maybe<Scalars['String']['output']>;
   aiModelIdByTier: Scalars['JSON']['output'];
