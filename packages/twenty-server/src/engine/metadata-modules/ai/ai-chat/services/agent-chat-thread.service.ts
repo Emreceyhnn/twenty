@@ -62,7 +62,7 @@ export class AgentChatThreadService {
 
   async createThread({
     isAssistantMentioned,
-    initialIsAssistantParticipant,
+    isInitialAssistantParticipant,
     recipientWorkspaceMemberIds,
     mentionedWorkspaceMemberIds,
     shouldApplyAssistantParticipation = true,
@@ -89,7 +89,7 @@ export class AgentChatThreadService {
             thread: createdThread,
             isInitialMessage: true,
             isAssistantMentioned,
-            initialIsAssistantParticipant,
+            isInitialAssistantParticipant,
             recipientWorkspaceMemberIds,
             mentionedWorkspaceMemberIds,
             shouldEmitEvent: false,
@@ -518,7 +518,7 @@ export class AgentChatThreadService {
 
   async applyAssistantParticipation({
     isAssistantMentioned = false,
-    initialIsAssistantParticipant,
+    isInitialAssistantParticipant,
     recipientWorkspaceMemberIds = [],
     mentionedWorkspaceMemberIds = [],
     messageId,
@@ -551,7 +551,7 @@ export class AgentChatThreadService {
       thread,
       isInitialMessage,
       isAssistantMentioned,
-      initialIsAssistantParticipant,
+      isInitialAssistantParticipant,
       recipientWorkspaceMemberIds,
       mentionedWorkspaceMemberIds,
       shouldEmitEvent,
@@ -564,7 +564,7 @@ export class AgentChatThreadService {
     thread,
     isInitialMessage,
     isAssistantMentioned = false,
-    initialIsAssistantParticipant,
+    isInitialAssistantParticipant,
     recipientWorkspaceMemberIds = [],
     mentionedWorkspaceMemberIds = [],
     shouldEmitEvent = true,
@@ -611,7 +611,7 @@ export class AgentChatThreadService {
       ...assistantPolicy,
       isAssistantParticipant: thread.isAssistantParticipant,
       isAssistantMentioned,
-      initialIsAssistantParticipant,
+      isInitialAssistantParticipant,
       isInitialMessage,
     });
     const result = {
