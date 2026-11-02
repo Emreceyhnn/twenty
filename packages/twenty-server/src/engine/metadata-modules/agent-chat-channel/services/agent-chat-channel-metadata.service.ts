@@ -389,7 +389,7 @@ export class AgentChatChannelMetadataService {
   }: {
     workspaceId: string;
     channel: FlatAgentChatChannelWithRoleIds;
-    ownerFlatApplication: FlatApplication;
+    ownerFlatApplication: Pick<FlatApplication, 'id' | 'universalIdentifier'>;
   }): Promise<FlatAgentChatChannelWithRoleIds> {
     const isRetainedByCallingApplication =
       channel.retainedApplicationUniversalIdentifier ===
