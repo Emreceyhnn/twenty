@@ -1,4 +1,5 @@
 import { useGlobalRecordCreationCommandMenuItems } from '@/command-menu-item/hooks/useGlobalRecordCreationCommandMenuItems';
+import { isCommandAllowedForDirectMessage } from '@/ai/utils/isCommandAllowedForDirectMessage';
 import { CommandMenuItemContainerType } from '@/command-menu-item/types/CommandMenuItemContainerType';
 import {
   CommandMenuContext,
@@ -111,6 +112,12 @@ export const CommandMenuContextProviderContent = ({
       (commandMenuContextApi.featureFlags.IS_AI_CHAT_INBOX_ENABLED ?? false);
 
     const contextCommandMenuItems = commandMenuItemsToDisplay
+      .filter((item) =>
+        isCommandAllowedForDirectMessage({
+          engineComponentKey: item.engineComponentKey,
+          context: commandMenuContextApi,
+        }),
+      )
       .filter(
         (item) =>
           !isCoreWorkflowIndex ||

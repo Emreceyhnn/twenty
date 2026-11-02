@@ -87,6 +87,7 @@ export class AgentChatDirectMessageIdentityService {
                     conversationType: 'DIRECT_MESSAGE',
                     ...pair,
                     isAssistantParticipant: false,
+                    lastActivityAt: null,
                   },
                   { onConflictDoNothing: true },
                 );

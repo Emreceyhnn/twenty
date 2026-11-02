@@ -1,6 +1,7 @@
 import { AGENT_CHAT_SEND_MESSAGE_EVENT_NAME } from '@/ai/constants/AgentChatSendMessageEventName';
 import { AGENT_CHAT_STOP_EVENT_NAME } from '@/ai/constants/AgentChatStopEventName';
 import { agentChatIsAwaitingFirstChunkFamilyState } from '@/ai/states/agentChatIsAwaitingFirstChunkFamilyState';
+import { agentChatDirectMessageSendingFamilyState } from '@/ai/states/agentChatDirectMessageSendingFamilyState';
 import { agentChatIsLoadingSelector } from '@/ai/states/selectors/agentChatIsLoadingSelector';
 import { agentChatIsStreamingFamilyState } from '@/ai/states/agentChatIsStreamingFamilyState';
 import { currentAiChatThreadState } from '@/ai/states/currentAiChatThreadState';
@@ -26,6 +27,10 @@ export const SendMessageButton = ({
   const agentChatIsLoading = useAtomStateValue(agentChatIsLoadingSelector);
 
   const currentAiChatThread = useAtomStateValue(currentAiChatThreadState);
+  const isSendingDirectMessage = useAtomFamilyStateValue(
+    agentChatDirectMessageSendingFamilyState,
+    currentAiChatThread ?? '',
+  );
   const agentChatIsStreaming = useAtomFamilyStateValue(
     agentChatIsStreamingFamilyState,
     { threadId: currentAiChatThread },
@@ -43,7 +48,10 @@ export const SendMessageButton = ({
     dispatchBrowserEvent(AGENT_CHAT_STOP_EVENT_NAME);
   };
 
-  if (agentChatIsStreaming || agentChatIsAwaitingFirstChunk) {
+  if (
+    !isSendingDirectMessage &&
+    (agentChatIsStreaming || agentChatIsAwaitingFirstChunk)
+  ) {
     return (
       <IconButton
         variant="solid"
@@ -66,7 +74,12 @@ export const SendMessageButton = ({
       aria-label={t`Send message`}
       size="sm"
       onClick={handleSendClick}
-      disabled={isDisabled || agentChatInputIsEmpty || agentChatIsLoading}
+      disabled={
+        isDisabled ||
+        isSendingDirectMessage ||
+        agentChatInputIsEmpty ||
+        agentChatIsLoading
+      }
     >
       <IconArrowUp />
     </IconButton>

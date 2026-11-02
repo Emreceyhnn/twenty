@@ -1,6 +1,8 @@
 /* @license Enterprise */
 
 import { Injectable } from '@nestjs/common';
+import { isNonEmptyString } from '@sniptt/guards';
+import { In } from 'typeorm';
 
 import groupBy from 'lodash.groupby';
 import { type ObjectRecordEvent } from 'twenty-shared/database-events';
@@ -14,6 +16,7 @@ import { type EventRecordAccessGate } from 'src/engine/permissions/combine/types
 import {
   type PermissionsMetadataMaps,
   type PermissionsObjectAccessRequest,
+  type RowAccessRecord,
 } from 'src/engine/permissions/combine/types/row-access-policy.type';
 import { type PermissionsPrincipalsContext } from 'src/engine/permissions/principal/types/permissions-principals-context.type';
 import { type PermissionsPrincipalsWithRolesContext } from 'src/engine/permissions/principal/types/permissions-principals-with-roles-context.type';
@@ -292,6 +295,25 @@ export class RecordAccessPolicyService {
             shouldIgnoreSoftDeleteDefaultFilter: true,
             fetchRecordShares,
             findPrivateRecordStates,
+            findRelatedRecords: ({ objectNameSingular, recordIds }) =>
+              this.withBypassingRepository({
+                workspaceId,
+                objectNameSingular,
+                work: async (repository) => {
+                  if (recordIds.length === 0) {
+                    return [];
+                  }
+
+                  const records = await repository.find({
+                    where: { id: In(recordIds) },
+                    withDeleted: true,
+                  });
+
+                  return records.filter((record): record is RowAccessRecord =>
+                    isNonEmptyString(record.id),
+                  );
+                },
+              }),
           },
         });
       },

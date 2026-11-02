@@ -5,6 +5,7 @@ import { isDefined } from 'twenty-shared/utils';
 import { useProjectAiChatThreadToUrl } from '@/ai/hooks/useProjectAiChatThreadToUrl';
 import { useRefreshAgentChatThreads } from '@/ai/hooks/useRefreshAgentChatThreads';
 import { currentAiChatThreadState } from '@/ai/states/currentAiChatThreadState';
+import { agentChatDirectMessageDraftsState } from '@/ai/states/agentChatDirectMessageDraftsState';
 import { newAiChatThreadIdState } from '@/ai/states/newAiChatThreadIdState';
 import { agentChatThreadsSelector } from '@/ai/states/selectors/agentChatThreadsSelector';
 import { agentChatVisibleThreadsSelector } from '@/ai/states/selectors/agentChatVisibleThreadsSelector';
@@ -26,6 +27,9 @@ export const useLeaveRemovedAiChatThread = () => {
     if (
       !isDefined(currentThreadId) ||
       currentThreadId === newAiChatThreadId ||
+      isDefined(
+        store.get(agentChatDirectMessageDraftsState.atom)[currentThreadId],
+      ) ||
       threads.some(({ id }) => id === currentThreadId)
     ) {
       return;

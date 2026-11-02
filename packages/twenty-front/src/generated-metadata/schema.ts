@@ -4710,6 +4710,7 @@ export type MutationSendAppChannelMessageArgs = {
 export type MutationSendChatMessageArgs = {
   browsingContext?: InputMaybe<Scalars['JSON']['input']>;
   channelId?: InputMaybe<Scalars['UUID']['input']>;
+  directMessageWorkspaceMemberId?: InputMaybe<Scalars['UUID']['input']>;
   fileAttachments?: InputMaybe<Array<FileAttachmentInput>>;
   isAssistantMentioned?: InputMaybe<Scalars['Boolean']['input']>;
   isAssistantParticipant?: InputMaybe<Scalars['Boolean']['input']>;
@@ -5871,6 +5872,7 @@ export type Query = {
   currentUserApplicationAuthorizations: Array<ApplicationAuthorization>;
   currentUserSessions: Array<UserSession>;
   currentWorkspace: Workspace;
+  directMessageThread?: Maybe<AgentChatThread>;
   enterpriseCheckoutSession?: Maybe<Scalars['String']['output']>;
   enterprisePortalSession?: Maybe<Scalars['String']['output']>;
   enterpriseSubscriptionStatus?: Maybe<EnterpriseSubscriptionStatusDto>;
@@ -6114,6 +6116,11 @@ export type QueryCheckWorkspaceSubdomainAvailabilityArgs = {
 
 export type QueryCommandMenuItemArgs = {
   id: Scalars['UUID']['input'];
+};
+
+
+export type QueryDirectMessageThreadArgs = {
+  peerWorkspaceMemberId: Scalars['UUID']['input'];
 };
 
 
@@ -6897,6 +6904,7 @@ export type SendChatMessageResult = {
   queued: Scalars['Boolean']['output'];
   recipientParticipantWorkspaceMemberIds?: Maybe<Array<Scalars['UUID']['output']>>;
   streamId?: Maybe<Scalars['String']['output']>;
+  threadId?: Maybe<Scalars['UUID']['output']>;
 };
 
 export type SendEmailAttachmentInput = {

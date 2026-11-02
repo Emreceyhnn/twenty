@@ -23,6 +23,10 @@ import { type AgentChatReplyPolicyService } from 'src/engine/metadata-modules/ai
 import { type AgentChatService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat.service';
 import { type AgentChatSharingService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-sharing.service';
 import { type AgentChatStreamingService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-streaming.service';
+import { type AgentChatTurnPreflightService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-turn-preflight.service';
+import { normalizeAgentChatDirectMessagePairOrThrow } from 'src/engine/metadata-modules/ai/ai-chat/utils/normalize-agent-chat-direct-message-pair-or-throw.util';
+import { type WorkspaceOrmManager } from 'src/engine/twenty-orm/workspace-orm.manager';
+import { buildSystemAuthContext } from 'src/engine/twenty-orm/utils/build-system-auth-context.util';
 import { type AgentChatThreadService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-thread.service';
 import { AgentMessageRole } from 'src/engine/metadata-modules/ai/ai-history/enums/agent-message-role.enum';
 import { AgentTurnStatus } from 'src/engine/metadata-modules/ai/ai-history/enums/agent-turn-status.enum';
@@ -86,12 +90,24 @@ export const createChatParticipationTestContext = async () => {
   const streamingService = getAppProviderByClassName<AgentChatStreamingService>(
     'AgentChatStreamingService',
   );
+  const turnPreflightService =
+    getAppProviderByClassName<AgentChatTurnPreflightService>(
+      'AgentChatTurnPreflightService',
+    );
+  const workspaceOrmManager = getAppProviderByClassName<WorkspaceOrmManager>(
+    'WorkspaceOrmManager',
+  );
   const featureFlagService =
     getAppProviderByClassName<FeatureFlagService>('FeatureFlagService');
   const wasInboxEnabled = await featureFlagService.isFeatureEnabled(
     FeatureFlagKey.IS_AI_CHAT_INBOX_ENABLED,
     workspaceId,
   );
+  const wasDirectMessageIdentityEnabled =
+    await featureFlagService.isFeatureEnabled(
+      FeatureFlagKey.IS_AGENT_CHAT_DIRECT_MESSAGE_IDENTITY_ENABLED,
+      workspaceId,
+    );
   const wasRecordSharingEnabled = await featureFlagService.isFeatureEnabled(
     FeatureFlagKey.IS_RECORD_LEVEL_SHARING_ENABLED,
     workspaceId,
@@ -104,6 +120,12 @@ export const createChatParticipationTestContext = async () => {
   await featureFlagService.upsertWorkspaceFeatureFlag({
     workspaceId,
     featureFlag: FeatureFlagKey.IS_RECORD_LEVEL_SHARING_ENABLED,
+    value: true,
+  });
+
+  await featureFlagService.upsertWorkspaceFeatureFlag({
+    workspaceId,
+    featureFlag: FeatureFlagKey.IS_AGENT_CHAT_DIRECT_MESSAGE_IDENTITY_ENABLED,
     value: true,
   });
 
@@ -124,18 +146,50 @@ export const createChatParticipationTestContext = async () => {
        SET "isAssistantParticipant" = $2 WHERE id = $1`,
       [threadId, isAssistantParticipant],
     );
-  const setConversationType = ({
+  const setConversationType = async ({
     threadId,
     conversationType,
   }: {
     threadId: string;
     conversationType: AgentChatThreadConversationType;
-  }) =>
-    global.testDataSource.query(
-      `UPDATE "${schema}"."agentChatThread"
-       SET "conversationType" = $2 WHERE id = $1`,
-      [threadId, conversationType],
+  }) => {
+    const isDirectMessage = conversationType === 'DIRECT_MESSAGE';
+    const peerWorkspaceMemberId = WORKSPACE_MEMBER_DATA_SEED_IDS.JONY;
+
+    if (isDirectMessage) {
+      await share({
+        threadId,
+        recipientWorkspaceMemberId: peerWorkspaceMemberId,
+        accessLevel: RecordShareAccessLevel.FULL,
+      });
+    }
+
+    await workspaceOrmManager.executeInWorkspaceContext(
+      () =>
+        workspaceOrmManager
+          .getRepository('agentChatThread', {
+            shouldBypassPermissionChecks: true,
+          })
+          .update(
+            { id: threadId },
+            {
+              conversationType,
+              ...(isDirectMessage
+                ? {
+                    ...normalizeAgentChatDirectMessagePairOrThrow({
+                      firstWorkspaceMemberId: workspaceMemberId,
+                      secondWorkspaceMemberId: peerWorkspaceMemberId,
+                    }),
+                    workspaceMemberId: null,
+                    channelId: null,
+                  }
+                : {}),
+            },
+          ),
+      buildSystemAuthContext(workspaceId),
+      { lite: true },
     );
+  };
   const createThread = async (isAssistantParticipant = true) => {
     const threadId = registerThread();
 
@@ -276,6 +330,7 @@ export const createChatParticipationTestContext = async () => {
     replyPolicyService,
     replyExecutionPolicyService,
     streamingService,
+    turnPreflightService,
     getWorkspace: () =>
       workspaceRepository.findOneByOrFail({ id: workspaceId }),
     featureFlagService,
@@ -307,6 +362,12 @@ export const createChatParticipationTestContext = async () => {
         workspaceId,
         featureFlag: FeatureFlagKey.IS_RECORD_LEVEL_SHARING_ENABLED,
         value: wasRecordSharingEnabled,
+      });
+      await featureFlagService.upsertWorkspaceFeatureFlag({
+        workspaceId,
+        featureFlag:
+          FeatureFlagKey.IS_AGENT_CHAT_DIRECT_MESSAGE_IDENTITY_ENABLED,
+        value: wasDirectMessageIdentityEnabled,
       });
       await setAssistantModes({
         aiChatDirectMessageAssistantMode:

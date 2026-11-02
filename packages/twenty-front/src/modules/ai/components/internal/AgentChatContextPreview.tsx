@@ -1,7 +1,5 @@
 import { AgentChatFilePreview } from '@/ai/components/internal/AgentChatFilePreview';
-import { agentChatSelectedFilesState } from '@/ai/states/agentChatSelectedFilesState';
-import { agentChatUploadedFilesState } from '@/ai/states/agentChatUploadedFilesState';
-import { useAtomState } from '@/ui/utilities/state/jotai/hooks/useAtomState';
+import { useAgentChatAttachments } from '@/ai/hooks/useAgentChatAttachments';
 import { styled } from '@linaria/react';
 import { themeCssVariables } from 'twenty-ui/theme';
 
@@ -13,12 +11,12 @@ const StyledPreviewsContainer = styled.div`
 `;
 
 export const AgentChatContextPreview = () => {
-  const [agentChatSelectedFiles, setAgentChatSelectedFiles] = useAtomState(
-    agentChatSelectedFilesState,
-  );
-  const [agentChatUploadedFiles, setAgentChatUploadedFiles] = useAtomState(
-    agentChatUploadedFilesState,
-  );
+  const {
+    selectedFiles: agentChatSelectedFiles,
+    setSelectedFiles: setAgentChatSelectedFiles,
+    uploadedFiles: agentChatUploadedFiles,
+    setUploadedFiles: setAgentChatUploadedFiles,
+  } = useAgentChatAttachments();
 
   const handleRemoveUploadedFile = (fileIndex: number) => {
     setAgentChatUploadedFiles(

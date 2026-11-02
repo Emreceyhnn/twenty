@@ -3,7 +3,7 @@ import { AuthWorkspaceMemberId } from 'src/engine/decorators/auth/auth-workspace
 import { AuthPrincipalGuard } from 'src/engine/guards/auth-principal.guard';
 import { AgentChatThreadLifecycleService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-thread-lifecycle.service';
 import { AgentChatSharingService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-sharing.service';
-import { UseFilters, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Inject, UseFilters, UseGuards, UseInterceptors } from '@nestjs/common';
 import {
   Args,
   Float,
@@ -37,9 +37,11 @@ import { AgentChatStreamRecoveryService } from 'src/engine/metadata-modules/ai/a
 import { AgentChatStreamingService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-streaming.service';
 import { AgentChatTurnPreflightService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-turn-preflight.service';
 import { AgentChatService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat.service';
+import { AgentChatDirectMessageService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-direct-message.service';
 import { AgentChatMessageReactionService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-message-reaction.service';
 import { AgentChatReplyPolicyService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-reply-policy.service';
-import { AgentChatParticipationService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-participation.service';
+import { FeatureFlagService } from 'src/engine/core-modules/feature-flag/services/feature-flag.service';
+import { FeatureFlagKey } from 'twenty-shared/types';
 import { AgentChatThreadService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-thread.service';
 import { SystemPromptBuilderService } from 'src/engine/metadata-modules/ai/ai-chat/services/system-prompt-builder.service';
 import { tagAiChatStreamScope } from 'src/engine/metadata-modules/ai/ai-chat/utils/tag-ai-chat-stream-scope.util';
@@ -76,6 +78,9 @@ import { WorkspaceCacheService } from 'src/engine/workspace-cache/services/works
 )
 @MetadataResolver(() => AgentChatThreadDTO)
 export class AgentChatResolver {
+  @Inject(AgentChatDirectMessageService)
+  private readonly directMessageService: AgentChatDirectMessageService;
+
   constructor(
     private readonly agentChatService: AgentChatService,
     private readonly agentChatQueueService: AgentChatQueueService,
@@ -91,7 +96,7 @@ export class AgentChatResolver {
     private readonly workspaceCacheService: WorkspaceCacheService,
     private readonly messageReactionService: AgentChatMessageReactionService,
     private readonly replyPolicyService: AgentChatReplyPolicyService,
-    private readonly participationService: AgentChatParticipationService,
+    private readonly featureFlagService: FeatureFlagService,
   ) {}
 
   @Query(() => AgentChatThreadDTO)
@@ -105,6 +110,20 @@ export class AgentChatResolver {
       threadId: id,
       workspaceMemberId,
       workspaceId,
+    });
+  }
+
+  @Query(() => AgentChatThreadDTO, { nullable: true })
+  async directMessageThread(
+    @Args('peerWorkspaceMemberId', { type: () => UUIDScalarType })
+    peerWorkspaceMemberId: string,
+    @AuthWorkspaceMemberId() workspaceMemberId: string,
+    @AuthWorkspace() { id: workspaceId }: WorkspaceEntity,
+  ) {
+    return this.directMessageService.find({
+      workspaceId,
+      workspaceMemberId,
+      peerWorkspaceMemberId,
     });
   }
 
@@ -231,61 +250,89 @@ export class AgentChatResolver {
       nullable: true,
     })
     recipientWorkspaceMemberIds?: string[] | null,
+    @Args('directMessageWorkspaceMemberId', {
+      type: () => UUIDScalarType,
+      nullable: true,
+    })
+    directMessageWorkspaceMemberId?: string | null,
   ): Promise<SendChatMessageResultDTO> {
-    const sentMessage =
-      await this.participationService.sendMessageWithParticipation({
-        threadId,
-        messageId,
-        workspaceMemberId,
+    const canonicalThreadId = isDefined(directMessageWorkspaceMemberId)
+      ? await this.directMessageService.prepareForSend({
+          workspaceId: workspace.id,
+          workspaceMemberId,
+          peerWorkspaceMemberId: directMessageWorkspaceMemberId,
+        })
+      : threadId;
+
+    const isAiChatInboxEnabled = await this.featureFlagService.isFeatureEnabled(
+      FeatureFlagKey.IS_AI_CHAT_INBOX_ENABLED,
+      workspace.id,
+    );
+
+    await this.threadService.createThreadIfMissing({
+      threadId: canonicalThreadId,
+      workspaceMemberId,
+      workspaceId: workspace.id,
+      channelId: channelId ?? undefined,
+      shouldApplyAssistantParticipation: !isAiChatInboxEnabled,
+      isAssistantMentioned: isAssistantMentioned ?? false,
+      initialIsAssistantParticipant: isAssistantParticipant ?? true,
+      recipientWorkspaceMemberIds: recipientWorkspaceMemberIds ?? [],
+      mentionedWorkspaceMemberIds: mentionedWorkspaceMemberIds ?? [],
+    });
+
+    const thread = await this.threadService.getWritableThread({
+      threadId: canonicalThreadId,
+      workspaceMemberId,
+      workspaceId: workspace.id,
+    });
+    const directMessageRecipientIds =
+      await this.directMessageService.resolveMessageRecipientIds({
         workspaceId: workspace.id,
-        isAssistantMentioned: isAssistantMentioned ?? false,
+        workspaceMemberId,
+        thread,
+        channelId,
         recipientWorkspaceMemberIds: recipientWorkspaceMemberIds ?? [],
         mentionedWorkspaceMemberIds: mentionedWorkspaceMemberIds ?? [],
-        sendMessage: async (isAiChatInboxEnabled) => {
-          await this.threadService.createThreadIfMissing({
-            threadId,
-            workspaceMemberId,
-            workspaceId: workspace.id,
-            channelId: channelId ?? undefined,
-            isAssistantMentioned: isAssistantMentioned ?? false,
-            initialIsAssistantParticipant: isAssistantParticipant ?? true,
-            recipientWorkspaceMemberIds: recipientWorkspaceMemberIds ?? [],
-            mentionedWorkspaceMemberIds: mentionedWorkspaceMemberIds ?? [],
-          });
+      });
+    const isDirectMessage = thread.conversationType === 'DIRECT_MESSAGE';
 
-          const sentMessageToThread = await this.sendChatMessageToThread({
-            threadId,
-            text,
-            messageId,
-            browsingContext,
-            modelId,
-            fileAttachments,
-            userWorkspaceId,
-            workspaceMemberId,
-            workspace,
-            shouldAssistantReply: shouldAssistantReply ?? true,
-            isAiChatInboxEnabled,
-            isAssistantMentioned,
-            initialIsAssistantParticipant: isAssistantParticipant ?? true,
-            mentionedWorkspaceMemberIds: mentionedWorkspaceMemberIds ?? [],
-            recipientWorkspaceMemberIds: recipientWorkspaceMemberIds ?? [],
-          });
-          const mentionedParticipantWorkspaceMemberIds =
-            await this.threadService.addMentionedParticipants({
-              threadId,
-              workspaceMemberId,
-              workspaceId: workspace.id,
-              mentionedWorkspaceMemberIds: mentionedWorkspaceMemberIds ?? [],
-            });
+    const sentMessage = await this.sendChatMessageToThread({
+      threadId: canonicalThreadId,
+      text,
+      messageId,
+      browsingContext,
+      modelId,
+      fileAttachments,
+      userWorkspaceId,
+      workspaceMemberId,
+      workspace,
+      shouldAssistantReply: isDirectMessage || (shouldAssistantReply ?? true),
+      isAiChatInboxEnabled,
+      isAssistantMentioned,
+      initialIsAssistantParticipant: isAssistantParticipant ?? true,
+      mentionedWorkspaceMemberIds: mentionedWorkspaceMemberIds ?? [],
+      recipientWorkspaceMemberIds:
+        directMessageRecipientIds ?? recipientWorkspaceMemberIds ?? [],
+    });
 
-          return {
-            ...sentMessageToThread,
-            mentionedParticipantWorkspaceMemberIds,
-          };
-        },
+    if (isAiChatInboxEnabled) {
+      return { ...sentMessage, threadId: canonicalThreadId };
+    }
+
+    const mentionedParticipantWorkspaceMemberIds =
+      await this.threadService.addMentionedParticipants({
+        threadId: canonicalThreadId,
+        workspaceMemberId,
+        workspaceId: workspace.id,
+        mentionedWorkspaceMemberIds: mentionedWorkspaceMemberIds ?? [],
       });
 
-    return sentMessage;
+    return {
+      ...sentMessage,
+      mentionedParticipantWorkspaceMemberIds,
+      threadId: canonicalThreadId,
+    };
   }
 
   private async sendChatMessageToThread({
@@ -330,12 +377,13 @@ export class AgentChatResolver {
         initialIsAssistantParticipant,
         recipientWorkspaceMemberIds,
         mentionedWorkspaceMemberIds,
+        shouldPersistParticipation: !isAiChatInboxEnabled,
       });
     const assistantReplyContext = {
       isAssistantMentioned: isAssistantMentioned ?? false,
       isDirectAssistantChat: assistantPolicy.isDirectAssistantChat,
     };
-    const isAssistantReplying = await this.replyPolicyService.shouldReply({
+    const shouldReply = await this.replyPolicyService.shouldReply({
       isAiChatInboxEnabled,
       shouldAssistantReply,
       thread,
@@ -345,15 +393,22 @@ export class AgentChatResolver {
       isAssistantMentioned,
       text,
     });
-
-    // Members can keep talking when the assistant cannot run
-    if (isAssistantReplying) {
-      await this.turnPreflightService.assertCanRunAgentTurn({
-        modelId,
-        userWorkspaceId,
-        workspace,
-      });
-    }
+    const isAssistantReplying = await this.resolveAssistantReplyAvailability({
+      shouldReply,
+      isDirectMessage: assistantPolicy.isDirectMessage,
+      isAssistantMentioned: isAssistantMentioned ?? false,
+      modelId,
+      userWorkspaceId,
+      workspace,
+    });
+    const participation = isAiChatInboxEnabled
+      ? {
+          isAssistantMentioned: isAssistantMentioned ?? false,
+          initialIsAssistantParticipant,
+          recipientWorkspaceMemberIds,
+          mentionedWorkspaceMemberIds,
+        }
+      : undefined;
 
     if (isDefined(thread.deletedAt)) {
       await this.threadService.restoreThread({
@@ -376,9 +431,10 @@ export class AgentChatResolver {
           text,
           messageId,
           fileAttachments: fileAttachments ?? undefined,
+          participation,
         });
 
-      return { messageId: savedMessage.messageId, queued: false };
+      return { ...savedMessage, queued: false };
     }
 
     const result = await this.agentChatStreamingService.streamAgentChat({
@@ -392,6 +448,7 @@ export class AgentChatResolver {
       text,
       messageId,
       fileAttachments: fileAttachments ?? undefined,
+      participation,
     });
 
     if (result.queued) {
@@ -401,7 +458,7 @@ export class AgentChatResolver {
         event: { type: 'queue-updated' },
       });
 
-      return { messageId: result.messageId, queued: true };
+      return { ...result, queued: true };
     }
 
     tagAiChatStreamScope({
@@ -415,7 +472,41 @@ export class AgentChatResolver {
       messageId: result.messageId,
       queued: false,
       streamId: result.streamId,
+      mentionedParticipantWorkspaceMemberIds:
+        result.mentionedParticipantWorkspaceMemberIds,
+      recipientParticipantWorkspaceMemberIds:
+        result.recipientParticipantWorkspaceMemberIds,
     };
+  }
+
+  private async resolveAssistantReplyAvailability({
+    shouldReply,
+    isDirectMessage,
+    isAssistantMentioned,
+    ...args
+  }: {
+    shouldReply: boolean;
+    isDirectMessage: boolean;
+    isAssistantMentioned: boolean;
+    modelId?: string;
+    userWorkspaceId: string;
+    workspace: WorkspaceEntity;
+  }): Promise<boolean> {
+    if (!shouldReply) {
+      return false;
+    }
+
+    try {
+      await this.turnPreflightService.assertCanRunAgentTurn(args);
+
+      return true;
+    } catch (error) {
+      if (isDirectMessage && !isAssistantMentioned) {
+        return false;
+      }
+
+      throw error;
+    }
   }
 
   @Mutation(() => SendChatMessageResultDTO)
@@ -487,7 +578,10 @@ export class AgentChatResolver {
       workspaceId: workspace.id,
     });
 
-    if (!isDefined(message)) {
+    if (
+      !isDefined(message) ||
+      message.senderWorkspaceMemberId !== workspaceMemberId
+    ) {
       throw new AiException(
         'Queued message not found',
         AiExceptionCode.MESSAGE_NOT_FOUND,
@@ -501,6 +595,7 @@ export class AgentChatResolver {
     });
     const deleted = await this.agentChatQueueService.deleteQueuedMessage({
       messageId,
+      workspaceMemberId,
       workspaceId: workspace.id,
     });
 

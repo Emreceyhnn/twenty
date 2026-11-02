@@ -1,7 +1,10 @@
-import { agentChatSelectedFilesState } from '@/ai/states/agentChatSelectedFilesState';
-import { agentChatUploadedFilesState } from '@/ai/states/agentChatUploadedFilesState';
+import { agentChatDirectMessageDraftsState } from '@/ai/states/agentChatDirectMessageDraftsState';
+import { agentChatDirectMessageDraftFamilySelector } from '@/ai/states/selectors/agentChatDirectMessageDraftFamilySelector';
+import { currentAiChatThreadState } from '@/ai/states/currentAiChatThreadState';
+import { newAiChatThreadIdState } from '@/ai/states/newAiChatThreadIdState';
+import { agentChatThreadRecordFamilySelector } from '@/ai/states/selectors/agentChatThreadRecordFamilySelector';
+import { getAgentChatAttachmentAtoms } from '@/ai/utils/getAgentChatAttachmentAtoms';
 import { useDirectFileUpload } from '@/file/hooks/useDirectFileUpload';
-import { useSetAtomState } from '@/ui/utilities/state/jotai/hooks/useSetAtomState';
 import { useLingui } from '@lingui/react/macro';
 import { useStore } from 'jotai';
 import { isDefined, isNonEmptyArray } from 'twenty-shared/utils';
@@ -14,76 +17,107 @@ export const useAiChatFileUpload = () => {
   const { uploadFile: directUploadFile } = useDirectFileUpload();
   const { t } = useLingui();
   const { enqueueToast } = useToast();
-  const setAgentChatSelectedFiles = useSetAtomState(
-    agentChatSelectedFilesState,
-  );
-  const setAgentChatUploadedFiles = useSetAtomState(
-    agentChatUploadedFilesState,
-  );
   const store = useStore();
 
-  const sendFile = async (file: File): Promise<AgentChatFileUIPart | null> => {
-    const abortController = new AbortController();
-    const unsubscribeFromSelectedFiles = store.sub(
-      agentChatSelectedFilesState.atom,
-      () => {
-        if (!store.get(agentChatSelectedFilesState.atom).includes(file)) {
-          abortController.abort();
-        }
-      },
+  const uploadFiles = async (files: File[]) => {
+    const threadId =
+      store.get(currentAiChatThreadState.atom) ??
+      store.get(newAiChatThreadIdState.atom);
+    const draft = store.get(
+      agentChatDirectMessageDraftFamilySelector.selectorFamily(threadId),
     );
-
-    try {
-      const uploadedFile = await directUploadFile(file, {
-        fileFolder: FileFolder.AgentChat,
-        signal: abortController.signal,
+    const thread = store.get(
+      agentChatThreadRecordFamilySelector.selectorFamily(threadId),
+    );
+    const isDirectMessage =
+      isDefined(draft) || thread?.conversationType === 'DIRECT_MESSAGE';
+    const getAttachmentAtoms = () =>
+      getAgentChatAttachmentAtoms({
+        threadId:
+          store.get(agentChatDirectMessageDraftsState.atom)[threadId]
+            ?.canonicalThreadId ?? threadId,
+        isDirectMessage,
       });
 
-      if (!store.get(agentChatSelectedFilesState.atom).includes(file)) {
-        return null;
-      }
-
-      return {
-        filename: file.name,
-        mediaType: file.type,
-        url: uploadedFile.url,
-        fileId: uploadedFile.id,
-        type: 'file',
-      };
-    } catch {
-      const fileName = file.name;
-
-      if (!abortController.signal.aborted) {
-        enqueueToast({
-          status: 'error',
-          children: t`Failed to upload file: ${fileName}`,
+    const sendFile = async (
+      file: File,
+    ): Promise<AgentChatFileUIPart | null> => {
+      const abortController = new AbortController();
+      const subscribeToSelectedFiles = () =>
+        store.sub(getAttachmentAtoms().selectedFilesAtom, () => {
+          if (
+            !store.get(getAttachmentAtoms().selectedFilesAtom).includes(file)
+          ) {
+            abortController.abort();
+          }
         });
-      }
-
-      return null;
-    } finally {
-      unsubscribeFromSelectedFiles();
-      setAgentChatSelectedFiles((previousSelectedFiles) =>
-        previousSelectedFiles.filter((selectedFile) => selectedFile !== file),
+      let unsubscribeFromSelectedFiles = subscribeToSelectedFiles();
+      const unsubscribeFromDrafts = store.sub(
+        agentChatDirectMessageDraftsState.atom,
+        () => {
+          unsubscribeFromSelectedFiles();
+          unsubscribeFromSelectedFiles = subscribeToSelectedFiles();
+        },
       );
-    }
-  };
 
-  const uploadFiles = async (files: File[]) => {
-    setAgentChatSelectedFiles((previousSelectedFiles) => [
-      ...previousSelectedFiles,
-      ...files,
-    ]);
+      try {
+        const uploadedFile = await directUploadFile(file, {
+          fileFolder: FileFolder.AgentChat,
+          signal: abortController.signal,
+        });
+
+        if (!store.get(getAttachmentAtoms().selectedFilesAtom).includes(file)) {
+          return null;
+        }
+
+        return {
+          filename: file.name,
+          mediaType: file.type,
+          url: uploadedFile.url,
+          fileId: uploadedFile.id,
+          type: 'file',
+        };
+      } catch {
+        const fileName = file.name;
+
+        if (!abortController.signal.aborted) {
+          enqueueToast({
+            status: 'error',
+            children: t`Failed to upload file: ${fileName}`,
+          });
+        }
+
+        return null;
+      } finally {
+        unsubscribeFromSelectedFiles();
+        unsubscribeFromDrafts();
+        store.set(
+          getAttachmentAtoms().selectedFilesAtom,
+          (previousSelectedFiles) =>
+            previousSelectedFiles.filter(
+              (selectedFile) => selectedFile !== file,
+            ),
+        );
+      }
+    };
+
+    store.set(
+      getAttachmentAtoms().selectedFilesAtom,
+      (previousSelectedFiles) => [...previousSelectedFiles, ...files],
+    );
 
     const successfulUploads = (await Promise.all(files.map(sendFile))).filter(
       isDefined,
     );
 
     if (isNonEmptyArray(successfulUploads)) {
-      setAgentChatUploadedFiles((previousUploadedFiles) => [
-        ...previousUploadedFiles,
-        ...successfulUploads,
-      ]);
+      store.set(
+        getAttachmentAtoms().uploadedFilesAtom,
+        (previousUploadedFiles) => [
+          ...previousUploadedFiles,
+          ...successfulUploads,
+        ],
+      );
     }
 
     return successfulUploads;

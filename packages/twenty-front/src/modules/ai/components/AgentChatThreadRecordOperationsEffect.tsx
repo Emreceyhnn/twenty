@@ -7,6 +7,7 @@ import { useApplyAgentChatThreadUpdate } from '@/ai/hooks/useApplyAgentChatThrea
 import { useLeaveRemovedAiChatThread } from '@/ai/hooks/useLeaveRemovedAiChatThread';
 import { useRefreshAgentChatOpenThreadsSummary } from '@/ai/hooks/useRefreshAgentChatOpenThreadsSummary';
 import { useRefreshAgentChatThreads } from '@/ai/hooks/useRefreshAgentChatThreads';
+import { useLoadDirectMessages } from '@/ai/hooks/useLoadDirectMessages';
 import { agentChatThreadListState } from '@/ai/states/agentChatThreadListState';
 import { type AgentChatThreadRecord } from '@/ai/types/AgentChatThreadRecord';
 import { useListenToObjectRecordOperationBrowserEvent } from '@/browser-event/hooks/useListenToObjectRecordOperationBrowserEvent';
@@ -42,6 +43,7 @@ export const AgentChatThreadRecordOperationsEffect = () => {
   const { applyAgentChatThreadUpdate, addAgentChatThread } =
     useApplyAgentChatThreadUpdate();
   const { refreshAgentChatThreads } = useRefreshAgentChatThreads();
+  const { loadDirectMessages } = useLoadDirectMessages();
   const { leaveRemovedAiChatThread } = useLeaveRemovedAiChatThread();
   const store = useStore();
   const { refreshAgentChatOpenThreadsSummary } =
@@ -52,11 +54,13 @@ export const AgentChatThreadRecordOperationsEffect = () => {
   const reloadAgentChatThreads = useCallback(async () => {
     refreshAgentChatOpenThreadsSummary();
     await refreshAgentChatThreads();
+    await loadDirectMessages('refresh');
     await leaveRemovedAiChatThread();
   }, [
     leaveRemovedAiChatThread,
     refreshAgentChatOpenThreadsSummary,
     refreshAgentChatThreads,
+    loadDirectMessages,
   ]);
 
   useListenToEventsForQuery({

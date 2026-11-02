@@ -6,6 +6,7 @@ import { themeCssVariables } from 'twenty-ui/theme';
 import { AgentChatThreadsFetchMoreTrigger } from '@/ai/components/AgentChatThreadsFetchMoreTrigger';
 import { AiChatSkeletonLoader } from '@/ai/components/internal/AiChatSkeletonLoader';
 import { NavigationDrawerAiChatChannelsSection } from '@/ai/components/NavigationDrawerAiChatChannelsSection';
+import { NavigationDrawerConnectedDirectMessagesSection } from '@/ai/components/NavigationDrawerConnectedDirectMessagesSection';
 import { NavigationDrawerAiChatFavoritesSection } from '@/ai/components/NavigationDrawerAiChatFavoritesSection';
 import { NavigationDrawerAiChatThreadSection } from '@/ai/components/NavigationDrawerAiChatThreadSection';
 import { NavigationDrawerAiChatTriageSection } from '@/ai/components/NavigationDrawerAiChatTriageSection';
@@ -51,6 +52,9 @@ export const NavigationDrawerAiChatContent = () => {
     FeatureFlagKey.IS_AI_CHAT_INBOX_ENABLED,
   );
   const currentAiChatThread = useAtomStateValue(currentAiChatThreadState);
+  const isDirectMessageIdentityEnabled = useIsFeatureEnabled(
+    FeatureFlagKey.IS_AGENT_CHAT_DIRECT_MESSAGE_IDENTITY_ENABLED,
+  );
   const { handleThreadClick } = useAiChatThreadClick(
     isAiChatInboxEnabled
       ? { shouldOpenInFullPage: true }
@@ -77,7 +81,9 @@ export const NavigationDrawerAiChatContent = () => {
     agentChatFavoriteThreads.map(({ id }) => id),
   );
   const nonFavoriteThreads = threads.filter(
-    ({ id }) => !agentChatFavoriteThreadIds.has(id),
+    ({ id, conversationType }) =>
+      conversationType !== 'DIRECT_MESSAGE' &&
+      !agentChatFavoriteThreadIds.has(id),
   );
   const recentThreads = isAiChatInboxEnabled
     ? nonFavoriteThreads.slice(0, AI_CHAT_INBOX_RECENT_THREADS_MAX_COUNT)
@@ -95,6 +101,9 @@ export const NavigationDrawerAiChatContent = () => {
             onThreadClick={handleThreadClick}
           />
           {isAiChatInboxEnabled && <NavigationDrawerAiChatChannelsSection />}
+          {isAiChatInboxEnabled && isDirectMessageIdentityEnabled && (
+            <NavigationDrawerConnectedDirectMessagesSection />
+          )}
           {recentThreads.length > 0 && (
             <NavigationDrawerAiChatThreadSection
               sectionId={AI_CHAT_RECENTS_NAVIGATION_SECTION_ID}

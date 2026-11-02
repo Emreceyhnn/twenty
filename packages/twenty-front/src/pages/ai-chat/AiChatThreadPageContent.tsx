@@ -2,6 +2,8 @@ import { type ReactNode } from 'react';
 import { CoreObjectNameSingular } from 'twenty-shared/types';
 
 import { AiChatThreadDetailsDropdown } from '@/ai/components/AiChatThreadDetailsDropdown';
+import { AiChatDirectMessageHeaderTitle } from '@/ai/components/AiChatDirectMessageHeaderTitle';
+import { useAiChatDirectMessage } from '@/ai/hooks/useAiChatDirectMessage';
 import { RecordShowPageContent } from '~/pages/object-record/RecordShowPageContent';
 
 type AiChatThreadPageContentProps = {
@@ -15,16 +17,25 @@ export const AiChatThreadPageContent = ({
   threadId,
   headerActions,
   headerTitlePrefix,
-}: AiChatThreadPageContentProps) => (
-  <RecordShowPageContent
-    parameters={{
-      objectNameSingular: CoreObjectNameSingular.AgentChatThread,
-      objectRecordId: threadId,
-    }}
-    headerActions={headerActions}
-    headerTitlePrefix={headerTitlePrefix}
-    headerTitleAccessory={<AiChatThreadDetailsDropdown threadId={threadId} />}
-    headerTitleMode="record-title"
-    isRecordIdentifierBarHidden
-  />
-);
+}: AiChatThreadPageContentProps) => {
+  const { isDirectMessage } = useAiChatDirectMessage(threadId);
+
+  return (
+    <RecordShowPageContent
+      parameters={{
+        objectNameSingular: CoreObjectNameSingular.AgentChatThread,
+        objectRecordId: threadId,
+      }}
+      headerActions={headerActions}
+      headerTitle={
+        isDirectMessage ? (
+          <AiChatDirectMessageHeaderTitle threadId={threadId} />
+        ) : undefined
+      }
+      headerTitlePrefix={headerTitlePrefix}
+      headerTitleAccessory={<AiChatThreadDetailsDropdown threadId={threadId} />}
+      headerTitleMode="record-title"
+      isRecordIdentifierBarHidden
+    />
+  );
+};

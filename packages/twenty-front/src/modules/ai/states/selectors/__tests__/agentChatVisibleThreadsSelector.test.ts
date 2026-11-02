@@ -5,6 +5,7 @@ import { agentChatThreadFilterStatusState } from '@/ai/states/agentChatThreadFil
 import { setAgentChatThreadList } from '@/ai/testing/setAgentChatThreadList';
 import { agentChatThreadParticipantsState } from '@/ai/states/agentChatThreadParticipantsState';
 import { agentChatVisibleThreadsSelector } from '@/ai/states/selectors/agentChatVisibleThreadsSelector';
+import { agentChatDirectMessagesSelector } from '@/ai/states/selectors/agentChatDirectMessagesSelector';
 import { type AgentChatThreadFilterStatus } from '@/ai/types/AgentChatThreadFilterStatus';
 import { type AgentChatThreadParticipantFieldsFragment } from '~/generated-metadata/graphql';
 
@@ -194,6 +195,56 @@ const getVisibleThreadIds = (filterStatus: AgentChatThreadFilterStatus) => {
 };
 
 describe('agentChatVisibleThreadsSelector', () => {
+  it('keeps a direct message in personal Inbox views and its sidebar shortcut after Done', () => {
+    const store = createStore();
+    setAgentChatThreadList(store, [
+      {
+        __typename: 'AgentChatThread',
+        id: 'direct-message',
+        title: null,
+        deletedAt: null,
+        createdAt: LAST_ACTIVITY_AT,
+        updatedAt: LAST_ACTIVITY_AT,
+        lastActivityAt: LAST_ACTIVITY_AT,
+        conversationType: 'DIRECT_MESSAGE',
+      },
+    ]);
+    const participant: AgentChatThreadParticipantFieldsFragment = {
+      ...READ,
+      id: 'participant',
+      threadId: 'direct-message',
+      archivedAt: null,
+      __typename: 'AgentChatThreadParticipant',
+    };
+    store.set(agentChatThreadParticipantsState.atom, {
+      'direct-message': participant,
+    });
+    store.set(
+      agentChatThreadFilterStatusState.atom,
+      AGENT_CHAT_THREAD_FILTER_STATUS.ACTIVE,
+    );
+    expect(
+      store.get(agentChatVisibleThreadsSelector.atom).map(({ id }) => id),
+    ).toEqual(['direct-message']);
+
+    store.set(agentChatThreadParticipantsState.atom, {
+      'direct-message': {
+        ...participant,
+        archivedAt: ACTIVITY_AFTER_ARCHIVE_AT,
+      },
+    });
+    store.set(
+      agentChatThreadFilterStatusState.atom,
+      AGENT_CHAT_THREAD_FILTER_STATUS.DONE,
+    );
+    expect(
+      store.get(agentChatVisibleThreadsSelector.atom).map(({ id }) => id),
+    ).toEqual(['direct-message']);
+    expect(
+      store.get(agentChatDirectMessagesSelector.atom).map(({ id }) => id),
+    ).toEqual(['direct-message']);
+  });
+
   it.each([
     [
       AGENT_CHAT_THREAD_FILTER_STATUS.ACTIVE,

@@ -9,6 +9,7 @@ import { IconDotsVertical, IconPencil, IconUnlink } from 'twenty-ui/icon';
 import { AiChatThreadRowTriage } from '@/ai/components/AiChatThreadRowTriage';
 import { AiChatThreadCommandMenuItems } from '@/ai/components/AiChatThreadCommandMenuItems';
 import { useRefreshAgentChatThreadPermissions } from '@/ai/hooks/useRefreshAgentChatThreadPermissions';
+import { useAiChatDirectMessage } from '@/ai/hooks/useAiChatDirectMessage';
 import { useTargetAiChatThreadsInContextStore } from '@/ai/hooks/useTargetAiChatThreadsInContextStore';
 import { agentChatThreadPermissionsFamilySelector } from '@/ai/states/selectors/agentChatThreadPermissionsFamilySelector';
 import { CommandMenuContextProvider } from '@/command-menu-item/contexts/CommandMenuContextProvider';
@@ -45,6 +46,7 @@ export const AiChatThreadActionsDropdown = ({
   shouldShowMore = true,
 }: AiChatThreadActionsDropdownProps) => {
   const { t } = useLingui();
+  const { isDirectMessage } = useAiChatDirectMessage(thread.id);
   const { upsertRecordsInStore } = useUpsertRecordsInStore();
   const { targetAiChatThreadsInContextStore } =
     useTargetAiChatThreadsInContextStore();
@@ -84,7 +86,7 @@ export const AiChatThreadActionsDropdown = ({
         {shouldShowTriageActions && !isDeleted && (
           <AiChatThreadRowTriage threadId={thread.id} />
         )}
-        {shouldShowMore && (
+        {shouldShowMore && !isDirectMessage && (
           <DropdownRoot
             dropdownId={getCommandMenuDropdownIdFromCommandMenuId(instanceId)}
             type="menu"

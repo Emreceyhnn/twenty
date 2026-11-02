@@ -6,6 +6,10 @@ import { sendChatParticipationMessage } from 'test/integration/graphql/utils/sen
 import { waitForAllJobsToFinish } from 'test/integration/utils/wait-for-all-jobs-to-finish.util';
 import { FeatureFlagKey, RecordShareAccessLevel } from 'twenty-shared/types';
 
+import {
+  AiException,
+  AiExceptionCode,
+} from 'src/engine/metadata-modules/ai/ai.exception';
 import { AiChatAssistantMode } from 'src/engine/core-modules/workspace/enums/ai-chat-assistant-mode.enum';
 import { WORKSPACE_MEMBER_DATA_SEED_IDS } from 'src/engine/workspace-manager/dev-seeder/data/constants/workspace-member-data-seeds.constant';
 
@@ -134,7 +138,7 @@ describe('Chat participation through the authenticated API', () => {
     expect(models.evaluate).not.toHaveBeenCalled();
   });
 
-  it('includes Ada on the first automatic DM message without replying while the client cannot run her', async () => {
+  it('uses automatic DM policy even when the client requests no reply', async () => {
     models.enableEvaluation();
     await context.setAssistantModes({
       aiChatDirectMessageAssistantMode: AiChatAssistantMode.AUTOMATIC,
@@ -148,11 +152,42 @@ describe('Chat participation through the authenticated API', () => {
     });
 
     expect(response.body.errors).toBeUndefined();
-    expect(response.body.data.sendChatMessage.streamId).toBeNull();
+    expect(response.body.data.sendChatMessage.streamId).toEqual(
+      expect.any(String),
+    );
     expect((await context.readThread(threadId)).isAssistantParticipant).toBe(
       true,
     );
-    expect(models.evaluate).not.toHaveBeenCalled();
+    expect(models.evaluate).toHaveBeenCalled();
+  });
+
+  it('keeps human DMs available when Ada cannot run and reports explicit mention failures', async () => {
+    models.enableEvaluation();
+    await context.setAssistantModes({
+      aiChatDirectMessageAssistantMode: AiChatAssistantMode.AUTOMATIC,
+    });
+    const threadId = await createDirectMessage(false);
+
+    jest
+      .spyOn(context.turnPreflightService, 'assertCanRunAgentTurn')
+      .mockRejectedValue(
+        new AiException(
+          'No AI models are available',
+          AiExceptionCode.API_KEY_NOT_CONFIGURED,
+        ),
+      );
+
+    const humanMessage = await sendChatParticipationMessage({ threadId });
+
+    expect(humanMessage.body.errors).toBeUndefined();
+    expect(humanMessage.body.data.sendChatMessage.streamId).toBeNull();
+
+    const mentionedMessage = await sendChatParticipationMessage({
+      threadId,
+      isAssistantMentioned: true,
+    });
+
+    expect(mentionedMessage.body.errors).toBeDefined();
   });
 
   it('stops replies in an existing DM after the workspace changes to Never', async () => {

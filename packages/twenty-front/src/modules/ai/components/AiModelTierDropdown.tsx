@@ -11,6 +11,7 @@ import { AiModelTierBars } from '@/ai/components/AiModelTierBars';
 import { AiModelTierSlider } from '@/ai/components/AiModelTierSlider';
 import { useAiModelTiers } from '@/ai/hooks/useAiModelTiers';
 import { useIsWorkspaceSetupChat } from '@/ai/hooks/useIsWorkspaceSetupChat';
+import { useAiChatDirectMessage } from '@/ai/hooks/useAiChatDirectMessage';
 import { useWorkspaceAiModelTiers } from '@/ai/hooks/useWorkspaceAiModelTiers';
 import { AGENT_CHAT_ASSISTANT_NAME } from '@/ai/constants/AgentChatAssistantName';
 import { agentChatIsAssistantOffState } from '@/ai/states/agentChatIsAssistantOffState';
@@ -52,6 +53,7 @@ export const AiModelTierDropdown = ({
   const tiers = useAiModelTiers();
   const { chatTier } = useWorkspaceAiModelTiers();
   const isWorkspaceSetupChat = useIsWorkspaceSetupChat();
+  const { isDirectMessage } = useAiChatDirectMessage();
   const [agentChatUserSelectedModelTier, setAgentChatUserSelectedModelTier] =
     useAtomState(agentChatUserSelectedModelTierState);
   const [agentChatIsAssistantOff, setAgentChatIsAssistantOff] = useAtomState(
@@ -61,7 +63,8 @@ export const AiModelTierDropdown = ({
     FeatureFlagKey.IS_AI_CHAT_INBOX_ENABLED,
   );
   const assistantSwitchId = useId();
-  const isAssistantOff = isAiChatInboxEnabled && agentChatIsAssistantOff;
+  const isAssistantOff =
+    isAiChatInboxEnabled && !isDirectMessage && agentChatIsAssistantOff;
 
   // The setup chat always runs on the fast tier server-side.
   const workspaceTier: AiModelTier = isWorkspaceSetupChat ? 'fast' : chatTier;
@@ -100,7 +103,7 @@ export const AiModelTierDropdown = ({
         aria-label={t`Choose a model mode`}
       >
         <StyledSliderContainer role="group" aria-label={t`Choose a model mode`}>
-          {isAiChatInboxEnabled && (
+          {isAiChatInboxEnabled && !isDirectMessage && (
             <StyledAssistantSwitchRow htmlFor={assistantSwitchId}>
               {t`${AGENT_CHAT_ASSISTANT_NAME} replies`}
               <Switch

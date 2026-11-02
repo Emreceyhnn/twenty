@@ -48,6 +48,10 @@ export type RowAccessRecord = { id: string } & Record<string, unknown>;
 
 export type RowAccessEvaluationContext = {
   shouldIgnoreSoftDeleteDefaultFilter: boolean;
+  findRelatedRecords?: (args: {
+    objectNameSingular: string;
+    recordIds: string[];
+  }) => Promise<RowAccessRecord[]>;
   fetchRecordShares: (args: {
     objectMetadataId: string;
     recordIds: string[];

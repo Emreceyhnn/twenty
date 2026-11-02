@@ -20,6 +20,7 @@ import { DatabaseEventAction } from 'src/engine/api/graphql/graphql-query-runner
 import { type PrivateRecordState } from 'src/engine/permissions/private-record/types/private-record-state.type';
 import { findPrivateRecordStates } from 'src/engine/permissions/private-record/utils/find-private-record-states.util';
 import { isPrivateRecordEnabled } from 'src/engine/permissions/private-record/utils/is-private-record-enabled.util';
+import { assertDirectMessageRecordMutationOrThrow } from 'src/engine/permissions/private-record/utils/assert-direct-message-record-mutation-or-throw.util';
 import { type WorkspaceAuthContext } from 'src/engine/core-modules/auth/types/workspace-auth-context.type';
 import { isRecordStockTrackedObject } from 'src/engine/core-modules/usage-limit/utils/is-record-stock-tracked-object.util';
 import { findFlatEntityByIdInFlatEntityMaps } from 'src/engine/metadata-modules/flat-entity/utils/find-flat-entity-by-id-in-flat-entity-maps.util';
@@ -1061,6 +1062,12 @@ export class WorkspaceRepository<TEntity extends ObjectLiteral = ObjectRecord> {
     });
 
     if (!this.options.shouldBypassPermissionChecks) {
+      await this.assertDirectMessageMutation({
+        recordsBefore: [],
+        recordsAfter: formattedRecords,
+        operationType: 'insert',
+      });
+
       validateRLSPredicatesForRecords({
         records: this.formatResult<ObjectRecord[]>(formattedRecords),
         objectMetadata: this.options.flatObjectMetadata,
@@ -1750,6 +1757,15 @@ export class WorkspaceRepository<TEntity extends ObjectLiteral = ObjectRecord> {
     const principal = this.resolvePermissionsPrincipalOrThrow();
     const metadataMaps = this.resolvePermissionsMetadataMaps();
 
+    await this.assertDirectMessageMutation({
+      recordsBefore: updates.map(({ rawRecordBefore }) => rawRecordBefore),
+      recordsAfter: updates.map(({ rawRecordBefore, setColumns }) => ({
+        ...rawRecordBefore,
+        ...setColumns,
+      })),
+      operationType: 'update',
+    });
+
     if (
       !isDefined(
         resolveRowLevelPermissionRecordFilter({
@@ -1814,6 +1830,7 @@ export class WorkspaceRepository<TEntity extends ObjectLiteral = ObjectRecord> {
 
     return {
       shouldIgnoreSoftDeleteDefaultFilter: false,
+      findRelatedRecords: (args) => this.findDirectMessageRelatedRecords(args),
       fetchRecordShares: async ({
         objectMetadataId,
         recordIds: requestedRecordIds,
@@ -1836,6 +1853,52 @@ export class WorkspaceRepository<TEntity extends ObjectLiteral = ObjectRecord> {
       findPrivateRecordStates: async () =>
         (privateRecordStates ??= this.selectPrivateRecordStates(recordIds)),
     };
+  }
+
+  private async assertDirectMessageMutation({
+    recordsBefore,
+    recordsAfter,
+    operationType,
+  }: {
+    recordsBefore: Record<string, unknown>[];
+    recordsAfter: Record<string, unknown>[];
+    operationType: OperationType;
+  }): Promise<void> {
+    if (this.options.shouldBypassPermissionChecks) {
+      return;
+    }
+
+    await assertDirectMessageRecordMutationOrThrow({
+      recordsBefore,
+      recordsAfter,
+      operationType,
+      principal: this.resolvePermissionsPrincipalOrThrow(),
+      metadataMaps: this.resolvePermissionsMetadataMaps(),
+      flatObjectMetadata: this.options.flatObjectMetadata,
+      context: this.buildWriteRowAccessEvaluationContext([]),
+    });
+  }
+
+  private async findDirectMessageRelatedRecords({
+    objectNameSingular,
+    recordIds,
+  }: {
+    objectNameSingular: string;
+    recordIds: string[];
+  }): Promise<RowAccessRecord[]> {
+    const objectMetadataId =
+      this.options.internalContext.objectIdByNameSingular[objectNameSingular];
+
+    if (recordIds.length === 0 || !isDefined(objectMetadataId)) {
+      return [];
+    }
+
+    return this.options
+      .getRepositoryForObjectMetadataId(objectMetadataId)
+      .buildBypassingEventSelectQueryBuilder(objectNameSingular)
+      .where({ id: In(recordIds) })
+      .withDeleted()
+      .getMany<RowAccessRecord>();
   }
 
   private async selectPrivateRecordStates(

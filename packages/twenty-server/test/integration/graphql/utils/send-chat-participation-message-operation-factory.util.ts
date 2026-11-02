@@ -13,6 +13,7 @@ export const sendChatParticipationMessageOperationFactory = ({
   isAssistantMentioned = false,
   mentionedWorkspaceMemberIds = [],
   recipientWorkspaceMemberIds = [],
+  directMessageWorkspaceMemberId,
 }: {
   threadId: string;
   messageId?: string;
@@ -23,6 +24,7 @@ export const sendChatParticipationMessageOperationFactory = ({
   isAssistantMentioned?: boolean | null;
   mentionedWorkspaceMemberIds?: string[];
   recipientWorkspaceMemberIds?: string[];
+  directMessageWorkspaceMemberId?: string;
 }) => ({
   query: gql`
     mutation SendParticipationMessage(
@@ -35,6 +37,7 @@ export const sendChatParticipationMessageOperationFactory = ({
       $isAssistantMentioned: Boolean
       $mentionedWorkspaceMemberIds: [UUID!]
       $recipientWorkspaceMemberIds: [UUID!]
+      $directMessageWorkspaceMemberId: UUID
     ) {
       sendChatMessage(
         threadId: $threadId
@@ -46,7 +49,9 @@ export const sendChatParticipationMessageOperationFactory = ({
         isAssistantMentioned: $isAssistantMentioned
         mentionedWorkspaceMemberIds: $mentionedWorkspaceMemberIds
         recipientWorkspaceMemberIds: $recipientWorkspaceMemberIds
+        directMessageWorkspaceMemberId: $directMessageWorkspaceMemberId
       ) {
+        threadId
         messageId
         queued
         streamId
@@ -65,5 +70,6 @@ export const sendChatParticipationMessageOperationFactory = ({
     isAssistantMentioned,
     mentionedWorkspaceMemberIds,
     recipientWorkspaceMemberIds,
+    directMessageWorkspaceMemberId,
   },
 });

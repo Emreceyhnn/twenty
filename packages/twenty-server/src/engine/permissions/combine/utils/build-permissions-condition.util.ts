@@ -10,6 +10,7 @@ import { areRecordGrantsHeldToRowLevelPermissions } from 'src/engine/permissions
 import { combineSqlConditions } from 'src/engine/permissions/combine/utils/combine-sql-conditions.util';
 import { resolvePermissionsRowAccessOutcome } from 'src/engine/permissions/combine/utils/resolve-permissions-row-access-outcome.util';
 import { buildPermissionsCreatorCondition } from 'src/engine/permissions/private-record/utils/build-permissions-creator-condition.util';
+import { buildDirectMessagePairCondition } from 'src/engine/permissions/private-record/utils/build-direct-message-pair-condition.util';
 import { isShareOnlyWhilePrivateRecordFlagDisabled } from 'src/engine/permissions/private-record/utils/is-share-only-while-private-record-flag-disabled.util';
 import { buildPermissionsShareCondition } from 'src/engine/permissions/record-share/utils/build-permissions-share-condition.util';
 import { buildPermissionsRlsCondition } from 'src/engine/permissions/rls/utils/build-permissions-rls-condition.util';
@@ -36,7 +37,7 @@ const buildPermissionsRoleConditions = (
   ].filter(isDefined);
 };
 
-export const buildPermissionsCondition = ({
+const buildGrantedPermissionsCondition = ({
   tableAlias,
   ...request
 }: Omit<PermissionsRowAccessSqlRequest, 'tableAlias'> & {
@@ -84,4 +85,29 @@ export const buildPermissionsCondition = ({
   const conditions = [...roleConditions, ...recordConditions];
 
   return conditions.length === 0 ? false : combineWithOr(conditions);
+};
+
+export const buildPermissionsCondition = (
+  request: Omit<PermissionsRowAccessSqlRequest, 'tableAlias'> & {
+    tableAlias?: string;
+  },
+): SqlCondition | boolean => {
+  const grantedCondition = buildGrantedPermissionsCondition(request);
+
+  if (grantedCondition === false) {
+    return false;
+  }
+
+  const pairCondition = buildDirectMessagePairCondition({
+    ...request,
+    tableAlias: request.tableAlias ?? request.flatObjectMetadata.nameSingular,
+  });
+
+  if (!isDefined(pairCondition)) {
+    return grantedCondition;
+  }
+
+  return grantedCondition === true
+    ? pairCondition
+    : combineSqlConditions([grantedCondition, pairCondition]);
 };

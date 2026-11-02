@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 
+import { FeatureFlagKey } from 'twenty-shared/types';
 import { isDefined, isNonEmptyArray } from 'twenty-shared/utils';
 import { In, IsNull, Not } from 'typeorm';
 
@@ -16,11 +17,16 @@ import { AgentChatThreadRecordEventService } from 'src/engine/metadata-modules/a
 import { type AgentChatAssistantParticipationArgs } from 'src/engine/metadata-modules/ai/ai-chat/types/agent-chat-assistant-participation-args.type';
 import { type AgentChatThreadAccessArgs } from 'src/engine/metadata-modules/ai/ai-chat/types/agent-chat-thread-access-args.type';
 import { type AgentChatThreadActivity } from 'src/engine/metadata-modules/ai/ai-chat/types/agent-chat-thread-activity.type';
+import { getAgentChatDirectMessagePeerOrThrow } from 'src/engine/metadata-modules/ai/ai-chat/utils/get-agent-chat-direct-message-peer-or-throw.util';
+import { assertAgentChatThreadIsNotDirectMessageOrThrow } from 'src/engine/metadata-modules/ai/ai-chat/utils/assert-agent-chat-thread-is-not-direct-message-or-throw.util';
 import { buildAgentChatThreadActivitySetClause } from 'src/engine/metadata-modules/ai/ai-chat/utils/build-agent-chat-thread-activity-set-clause.util';
 import { isUniqueViolationError } from 'src/engine/metadata-modules/ai/ai-chat/utils/is-unique-violation-error.util';
 import { lockAgentChatChannelForThreadWriteOrThrow } from 'src/engine/metadata-modules/ai/ai-chat/utils/lock-agent-chat-channel-for-thread-write-or-throw.util';
 import { resolveAgentChatAssistantParticipation } from 'src/engine/metadata-modules/ai/ai-chat/utils/resolve-agent-chat-assistant-participation.util';
 import { throwAgentChatThreadNotFound } from 'src/engine/metadata-modules/ai/ai-chat/utils/throw-agent-chat-thread-not-found.util';
+import { WorkspaceCacheService } from 'src/engine/workspace-cache/services/workspace-cache.service';
+import { type WorkspaceTransactionScope } from 'src/engine/twenty-orm/types/workspace-transaction-scope.type';
+import { getAgentChatThreadTable } from 'src/engine/metadata-modules/ai/ai-chat/utils/get-agent-chat-thread-table.util';
 import { AgentHistoryRepository } from 'src/engine/metadata-modules/ai/ai-history/repositories/agent-history-repository';
 import { type AgentHistoryStorageContext } from 'src/engine/metadata-modules/ai/ai-history/services/agent-history-workspace-storage.service';
 import { InjectAgentHistoryRepository } from 'src/engine/metadata-modules/ai/ai-history/repositories/inject-agent-history-repository.decorator';
@@ -39,6 +45,9 @@ export class AgentChatThreadService {
   @Inject(AgentChatAssistantPolicyService)
   private readonly assistantPolicyService: AgentChatAssistantPolicyService;
 
+  @Inject(WorkspaceCacheService)
+  private readonly workspaceCacheService: WorkspaceCacheService;
+
   constructor(
     @InjectAgentHistoryRepository('agentChatThread')
     private readonly threadRepository: AgentHistoryRepository<AgentChatThreadWorkspaceEntity>,
@@ -56,9 +65,12 @@ export class AgentChatThreadService {
     initialIsAssistantParticipant,
     recipientWorkspaceMemberIds,
     mentionedWorkspaceMemberIds,
+    shouldApplyAssistantParticipation = true,
     ...args
   }: Parameters<AgentChatSharingService['createThread']>[0] &
-    AgentChatAssistantParticipationArgs): Promise<AgentChatThreadWorkspaceEntity> {
+    AgentChatAssistantParticipationArgs & {
+      shouldApplyAssistantParticipation?: boolean;
+    }): Promise<AgentChatThreadWorkspaceEntity> {
     if (isDefined(args.channelId)) {
       await this.channelAccessService.assertChannelAccess({
         workspaceId: args.workspaceId,
@@ -68,18 +80,22 @@ export class AgentChatThreadService {
     }
 
     const createdThread = await this.sharingService.createThread(args);
-    const { thread: savedThread } = await this.reconcileAssistantParticipation({
-      workspaceId: args.workspaceId,
-      workspaceMemberId: args.workspaceMemberId,
-      threadId: createdThread.id,
-      thread: createdThread,
-      isInitialMessage: true,
-      isAssistantMentioned,
-      initialIsAssistantParticipant,
-      recipientWorkspaceMemberIds,
-      mentionedWorkspaceMemberIds,
-      shouldEmitEvent: false,
-    });
+    const savedThread = shouldApplyAssistantParticipation
+      ? (
+          await this.reconcileAssistantParticipation({
+            workspaceId: args.workspaceId,
+            workspaceMemberId: args.workspaceMemberId,
+            threadId: createdThread.id,
+            thread: createdThread,
+            isInitialMessage: true,
+            isAssistantMentioned,
+            initialIsAssistantParticipant,
+            recipientWorkspaceMemberIds,
+            mentionedWorkspaceMemberIds,
+            shouldEmitEvent: false,
+          })
+        ).thread
+      : createdThread;
 
     // Sent first, so the new thread never shows as unread to its owner
     await this.participantService.emitParticipantCreated({
@@ -107,6 +123,7 @@ export class AgentChatThreadService {
     title?: string;
     isSubscribed?: boolean;
     channelId?: string;
+    shouldApplyAssistantParticipation?: boolean;
   } & AgentChatAssistantParticipationArgs): Promise<boolean> {
     if (
       await this.threadRepository.existsBy(args.workspaceId, { id: threadId })
@@ -228,7 +245,23 @@ export class AgentChatThreadService {
 
     const workspaceId = authContext.workspace.id;
     const { workspaceMemberId } = authContext;
-    const unassignedThreadCriteria = { workspaceMemberId: IsNull() };
+    const { featureFlagsMap } = await this.workspaceCacheService.getOrRecompute(
+      workspaceId,
+      ['featureFlagsMap'],
+    );
+    const unassignedThreadCriteria = {
+      workspaceMemberId: IsNull(),
+      ...(featureFlagsMap[
+        FeatureFlagKey.IS_AGENT_CHAT_DIRECT_MESSAGE_IDENTITY_ENABLED
+      ]
+        ? {
+            conversationType:
+              Not<AgentChatThreadWorkspaceEntity['conversationType']>(
+                'DIRECT_MESSAGE',
+              ),
+          }
+        : {}),
+    };
 
     const threadsBefore = await this.threadRepository.find(workspaceId, {
       where: { id: In(threadIds), ...unassignedThreadCriteria },
@@ -331,7 +364,11 @@ export class AgentChatThreadService {
     }
   }
 
-  async getWritableThread(args: AgentChatThreadAccessArgs) {
+  async getWritableThread(
+    args: AgentChatThreadAccessArgs & {
+      transactionScope?: WorkspaceTransactionScope;
+    },
+  ) {
     return this.sharingService.getThreadWithAccess({
       ...args,
       operationType: 'update',
@@ -372,6 +409,7 @@ export class AgentChatThreadService {
   async mentionParticipants(
     args: AgentChatThreadAccessArgs & {
       participantWorkspaceMemberIds: string[];
+      transactionScope?: WorkspaceTransactionScope;
     },
   ): Promise<string[]> {
     return this.addParticipants({ ...args, isMention: true });
@@ -380,6 +418,7 @@ export class AgentChatThreadService {
   async deliverToParticipants(
     args: AgentChatThreadAccessArgs & {
       participantWorkspaceMemberIds: string[];
+      transactionScope?: WorkspaceTransactionScope;
     },
   ): Promise<string[]> {
     return this.addParticipants({ ...args, isMention: false });
@@ -388,16 +427,33 @@ export class AgentChatThreadService {
   private async addParticipants({
     participantWorkspaceMemberIds,
     isMention,
+    transactionScope,
     ...args
   }: AgentChatThreadAccessArgs & {
     participantWorkspaceMemberIds: string[];
+    transactionScope?: WorkspaceTransactionScope;
     isMention: boolean;
   }): Promise<string[]> {
     await this.sharingService.assertHasMentionResolutionOrThrow(
       args.workspaceId,
     );
 
-    const thread = await this.getWritableThread(args);
+    const thread = await this.getWritableThread({ ...args, transactionScope });
+    if (thread.conversationType === 'DIRECT_MESSAGE') {
+      const peerWorkspaceMemberId = getAgentChatDirectMessagePeerOrThrow({
+        thread,
+        workspaceMemberId: args.workspaceMemberId,
+      });
+      const hasOutsider = participantWorkspaceMemberIds.some(
+        (memberId) =>
+          ![args.workspaceMemberId, peerWorkspaceMemberId].includes(memberId),
+      );
+
+      if (hasOutsider) {
+        throwAgentChatThreadNotFound();
+      }
+    }
+
     const candidateMemberIds = [
       ...new Set(participantWorkspaceMemberIds),
     ].filter((memberId) => memberId !== args.workspaceMemberId);
@@ -410,36 +466,52 @@ export class AgentChatThreadService {
       await this.sharingService.shareThreadWithMembers({
         ...args,
         memberIds: candidateMemberIds,
+        transactionScope,
       });
 
     if (participantMemberIds.length === 0) {
       return participantMemberIds;
     }
 
-    await this.threadRepository.query(args.workspaceId, ({ manager, table }) =>
-      manager.query(
-        `UPDATE ${table('agentChatThread')}
+    const updateWritersQuery = `UPDATE ${getAgentChatThreadTable(args.workspaceId)}
          SET "updatedAt" = now(),
            "writerWorkspaceMemberIds" = COALESCE("writerWorkspaceMemberIds", '{}') || ARRAY(
              SELECT member_id FROM unnest($2::text[]) AS member_id
              WHERE NOT member_id = ANY(COALESCE("writerWorkspaceMemberIds", '{}'))
                AND member_id IS DISTINCT FROM "workspaceMemberId"::text
            )
-         WHERE id = $1`,
-        [args.threadId, participantMemberIds],
-      ),
-    );
+         WHERE id = $1`;
+    const updateWritersParameters = [args.threadId, participantMemberIds];
+
+    if (isDefined(transactionScope)) {
+      await transactionScope.executeRawQuery(
+        updateWritersQuery,
+        updateWritersParameters,
+      );
+    } else {
+      await this.threadRepository.query(args.workspaceId, ({ manager }) =>
+        manager.query(updateWritersQuery, updateWritersParameters),
+      );
+    }
 
     await this.participantService.moveMembersToInbox({
       ...args,
       participantWorkspaceMemberIds: participantMemberIds,
       isMention,
+      transactionScope,
     });
 
-    await this.threadRecordEventService.emitThreadUpdated({
-      workspaceId: args.workspaceId,
-      threadBefore: thread,
-    });
+    const emitThreadUpdated = () =>
+      this.threadRecordEventService.emitThreadUpdated({
+        workspaceId: args.workspaceId,
+        threadBefore: thread,
+      });
+
+    if (isDefined(transactionScope)) {
+      transactionScope.afterCommit(emitThreadUpdated);
+    } else {
+      await emitThreadUpdated();
+    }
 
     return participantMemberIds;
   }
@@ -451,11 +523,15 @@ export class AgentChatThreadService {
     mentionedWorkspaceMemberIds = [],
     messageId,
     shouldEmitEvent = true,
+    shouldPersistParticipation = true,
+    transactionScope,
     ...args
   }: AgentChatThreadAccessArgs &
     AgentChatAssistantParticipationArgs & {
       messageId?: string;
       shouldEmitEvent?: boolean;
+      shouldPersistParticipation?: boolean;
+      transactionScope?: WorkspaceTransactionScope;
     }): Promise<{
     thread: AgentChatThreadWorkspaceEntity;
     isInitialMessage: boolean;
@@ -463,10 +539,11 @@ export class AgentChatThreadService {
       ReturnType<AgentChatAssistantPolicyService['resolve']>
     >;
   }> {
-    const thread = await this.getWritableThread(args);
+    const thread = await this.getWritableThread({ ...args, transactionScope });
     const isInitialMessage = await this.isInitialMessage({
       ...args,
       messageId,
+      transactionScope,
     });
 
     return this.reconcileAssistantParticipation({
@@ -478,6 +555,8 @@ export class AgentChatThreadService {
       recipientWorkspaceMemberIds,
       mentionedWorkspaceMemberIds,
       shouldEmitEvent,
+      shouldPersistParticipation,
+      transactionScope,
     });
   }
 
@@ -489,12 +568,16 @@ export class AgentChatThreadService {
     recipientWorkspaceMemberIds = [],
     mentionedWorkspaceMemberIds = [],
     shouldEmitEvent = true,
+    shouldPersistParticipation = true,
+    transactionScope,
     ...args
   }: AgentChatThreadAccessArgs &
     AgentChatAssistantParticipationArgs & {
       thread: AgentChatThreadWorkspaceEntity;
       isInitialMessage: boolean;
       shouldEmitEvent?: boolean;
+      shouldPersistParticipation?: boolean;
+      transactionScope?: WorkspaceTransactionScope;
     }): Promise<{
     thread: AgentChatThreadWorkspaceEntity;
     isInitialMessage: boolean;
@@ -509,6 +592,7 @@ export class AgentChatThreadService {
     const candidateWorkspaceMemberIds =
       await this.sharingService.findEligibleParticipantWorkspaceMemberIds({
         ...args,
+        transactionScope,
         memberIds: [
           ...mentionedWorkspaceMemberIds,
           ...(isInitialMessage ? recipientWorkspaceMemberIds : []),
@@ -517,6 +601,7 @@ export class AgentChatThreadService {
     const assistantPolicy = await this.assistantPolicyService.resolve({
       workspaceId: args.workspaceId,
       thread,
+      transactionScope,
       candidateWorkspaceMemberIds: [
         args.workspaceMemberId,
         ...candidateWorkspaceMemberIds,
@@ -535,45 +620,74 @@ export class AgentChatThreadService {
       assistantPolicy,
     };
 
-    if (thread.isAssistantParticipant === isAssistantParticipant) {
+    if (
+      !shouldPersistParticipation ||
+      thread.isAssistantParticipant === isAssistantParticipant
+    ) {
       return result;
     }
 
-    const updatedThread = await this.threadRepository.update(
-      args.workspaceId,
-      {
-        id: args.threadId,
-        isAssistantParticipant: !isAssistantParticipant,
-      },
-      { isAssistantParticipant },
-    );
+    const threadCriteria = {
+      id: args.threadId,
+      isAssistantParticipant: !isAssistantParticipant,
+    };
+    const updatedThread = isDefined(transactionScope)
+      ? await transactionScope
+          .getRepository<AgentChatThreadWorkspaceEntity>(
+            'agentChatThread',
+            { shouldBypassPermissionChecks: true },
+            { shouldSkipEventEmission: true },
+          )
+          .update(threadCriteria, { isAssistantParticipant })
+      : await this.threadRepository.update(args.workspaceId, threadCriteria, {
+          isAssistantParticipant,
+        });
 
-    if ((updatedThread.affected ?? 0) === 0 || !shouldEmitEvent) {
+    if (updatedThread.generatedMaps.length === 0 || !shouldEmitEvent) {
       return result;
     }
 
-    await this.threadRecordEventService.emitThreadUpdated({
-      workspaceId: args.workspaceId,
-      threadBefore: thread,
-    });
+    const emitThreadUpdated = () =>
+      this.threadRecordEventService.emitThreadUpdated({
+        workspaceId: args.workspaceId,
+        threadBefore: thread,
+      });
+
+    if (isDefined(transactionScope)) {
+      transactionScope.afterCommit(emitThreadUpdated);
+    } else {
+      await emitThreadUpdated();
+    }
 
     return result;
   }
 
   async isInitialMessage({
     messageId,
+    transactionScope,
     ...args
   }: AgentChatThreadAccessArgs & {
     messageId?: string;
+    transactionScope?: WorkspaceTransactionScope;
   }): Promise<boolean> {
-    await this.getWritableThread(args);
+    await this.getWritableThread({ ...args, transactionScope });
 
     const { workspaceId, threadId, workspaceMemberId } = args;
-    const firstMessage = await this.messageRepository.findOne(workspaceId, {
+    const messageRepository =
+      transactionScope?.getRepository<AgentMessageWorkspaceEntity>(
+        'agentMessage',
+        { shouldBypassPermissionChecks: true },
+        { shouldSkipEventEmission: true },
+      );
+    const firstMessageOptions = {
       where: { threadId, role: Not(AgentMessageRole.SYSTEM) },
       select: ['id', 'role', 'senderWorkspaceMemberId'],
-      order: { createdAt: 'ASC', id: 'ASC' },
-    });
+      order: { createdAt: 'ASC' as const, id: 'ASC' as const },
+      withDeleted: true,
+    };
+    const firstMessage = isDefined(messageRepository)
+      ? await messageRepository.findOne(firstMessageOptions)
+      : await this.messageRepository.findOne(workspaceId, firstMessageOptions);
 
     if (!isDefined(messageId)) {
       return !isDefined(firstMessage);
@@ -588,10 +702,20 @@ export class AgentChatThreadService {
       return false;
     }
 
-    const hasOtherUserMessage = await this.messageRepository.existsBy(
-      workspaceId,
-      { threadId, role: AgentMessageRole.USER, id: Not(messageId) },
-    );
+    const otherUserMessageCriteria = {
+      threadId,
+      role: AgentMessageRole.USER,
+      id: Not(messageId),
+    };
+    const hasOtherUserMessage = isDefined(messageRepository)
+      ? await messageRepository.exists({
+          where: otherUserMessageCriteria,
+          withDeleted: true,
+        })
+      : await this.messageRepository.existsBy(
+          workspaceId,
+          otherUserMessageCriteria,
+        );
 
     return !hasOtherUserMessage;
   }
@@ -621,6 +745,16 @@ export class AgentChatThreadService {
     assigneeWorkspaceMemberId: string | null;
   }): Promise<void> {
     const thread = await this.getWritableThread(args);
+
+    if (
+      thread.conversationType === 'DIRECT_MESSAGE' &&
+      isDefined(assigneeWorkspaceMemberId)
+    ) {
+      getAgentChatDirectMessagePeerOrThrow({
+        thread,
+        workspaceMemberId: assigneeWorkspaceMemberId,
+      });
+    }
 
     if (
       isDefined(assigneeWorkspaceMemberId) &&
@@ -693,6 +827,8 @@ export class AgentChatThreadService {
     channelId: string | null;
   }): Promise<void> {
     const thread = await this.getWritableThread(args);
+
+    assertAgentChatThreadIsNotDirectMessageOrThrow(thread);
 
     if (isDefined(channelId)) {
       await this.channelAccessService.assertChannelAccess({
@@ -771,12 +907,22 @@ export class AgentChatThreadService {
   // member out rather than failing the send
   async addMentionedParticipants({
     mentionedWorkspaceMemberIds,
+    transactionScope,
     ...args
   }: AgentChatThreadAccessArgs & {
     mentionedWorkspaceMemberIds: string[];
+    transactionScope?: WorkspaceTransactionScope;
   }): Promise<string[]> {
     if (mentionedWorkspaceMemberIds.length === 0) {
       return [];
+    }
+
+    if (isDefined(transactionScope)) {
+      return this.mentionParticipants({
+        ...args,
+        participantWorkspaceMemberIds: mentionedWorkspaceMemberIds,
+        transactionScope,
+      });
     }
 
     try {

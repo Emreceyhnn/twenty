@@ -18,6 +18,7 @@ import { AgentChatChannelGrantService } from 'src/engine/metadata-modules/ai/ai-
 import { AgentChatChannelService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-channel.service';
 import { AgentChatChannelThreadsService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-channel-threads.service';
 import { AgentChatDirectMessageIdentityService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-direct-message-identity.service';
+import { AgentChatDirectMessageService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-direct-message.service';
 import { AgentChatSharingService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-sharing.service';
 import { AgentChatThreadParticipantEventService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-thread-participant-event.service';
 import { AgentChatThreadParticipantService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-thread-participant.service';
@@ -53,6 +54,7 @@ import { WorkspaceCacheModule } from 'src/engine/workspace-cache/workspace-cache
     AgentChatChannelService,
     AgentChatChannelThreadsService,
     AgentChatDirectMessageIdentityService,
+    AgentChatDirectMessageService,
     AgentChatSharingService,
     AgentChatThreadParticipantEventService,
     AgentChatThreadParticipantService,
@@ -69,6 +71,7 @@ import { WorkspaceCacheModule } from 'src/engine/workspace-cache/workspace-cache
     AgentChatChannelService,
     AgentChatChannelThreadsService,
     AgentChatDirectMessageIdentityService,
+    AgentChatDirectMessageService,
     AgentChatSharingService,
     AgentChatThreadParticipantService,
     AgentChatThreadService,

@@ -22,6 +22,7 @@ import { AiChatThreadDetailsStatus } from '@/ai/components/AiChatThreadDetailsSt
 import { AI_CHAT_THREAD_DETAILS_LABEL_WIDTH_IN_PX } from '@/ai/constants/AiChatThreadDetailsLabelWidthInPx';
 import { agentChatChannelsState } from '@/ai/states/agentChatChannelsState';
 import { useAiChatThreadRecordTargets } from '@/ai/hooks/useAiChatThreadRecordTargets';
+import { useAiChatDirectMessage } from '@/ai/hooks/useAiChatDirectMessage';
 import { useChatTargetNavigation } from '@/ai/hooks/useChatTargetNavigation';
 import { useIsAiChatArtifactSurface } from '@/ai/hooks/useIsAiChatArtifactSurface';
 import { agentChatThreadRecordFamilySelector } from '@/ai/states/selectors/agentChatThreadRecordFamilySelector';
@@ -70,6 +71,7 @@ export const AiChatThreadDetailsDropdown = ({
   threadId,
 }: AiChatThreadDetailsDropdownProps) => {
   const { t } = useLingui();
+  const { isDirectMessage } = useAiChatDirectMessage(threadId);
   const theme = useTheme();
   const dropdownId = useWorkspaceSurfaceScopedComponentInstanceId(
     `ai-chat-thread-details-${threadId}`,
@@ -205,60 +207,64 @@ export const AiChatThreadDetailsDropdown = ({
                 )}
               </DetailsRow>
             )}
-            <DetailsRow
-              labelWidth={AI_CHAT_THREAD_DETAILS_LABEL_WIDTH_IN_PX}
-              startIcon={<IconHash size={themeCssVariables.icon.size.md} />}
-              label={t`Channel`}
-              action={
-                isDefined(thread) && (
-                  <AiChatThreadChannelPicker
-                    thread={thread}
-                    dropdownId={`${dropdownId}-channel-picker`}
+            {!isDirectMessage && (
+              <DetailsRow
+                labelWidth={AI_CHAT_THREAD_DETAILS_LABEL_WIDTH_IN_PX}
+                startIcon={<IconHash size={themeCssVariables.icon.size.md} />}
+                label={t`Channel`}
+                action={
+                  isDefined(thread) && (
+                    <AiChatThreadChannelPicker
+                      thread={thread}
+                      dropdownId={`${dropdownId}-channel-picker`}
+                    />
+                  )
+                }
+              >
+                {isDefined(channel) ? (
+                  <StyledChannel>
+                    <AgentChatChannelIcon
+                      channel={channel}
+                      size={theme.icon.size.sm}
+                    />
+                    {channel.name}
+                  </StyledChannel>
+                ) : (
+                  <StyledEmptyValue>{t`None`}</StyledEmptyValue>
+                )}
+              </DetailsRow>
+            )}
+            {!isDirectMessage && (
+              <DetailsRow
+                labelWidth={AI_CHAT_THREAD_DETAILS_LABEL_WIDTH_IN_PX}
+                startIcon={<IconUsers size={themeCssVariables.icon.size.md} />}
+                label={t`Assignee`}
+                action={
+                  canChangeAssignee && (
+                    <LightIconButton
+                      aria-label={t`Change assignee`}
+                      title={t`Change assignee`}
+                      emphasis="subtle"
+                      onClick={() => {
+                        closeDropdown(dropdownId);
+                        openAssignAiChatInSidePanel([threadId]);
+                      }}
+                    >
+                      <IconPencil />
+                    </LightIconButton>
+                  )
+                }
+              >
+                {isDefined(assignee) ? (
+                  <RecordChip
+                    objectNameSingular={CoreObjectNameSingular.WorkspaceMember}
+                    record={{ ...assignee, __typename: 'WorkspaceMember' }}
                   />
-                )
-              }
-            >
-              {isDefined(channel) ? (
-                <StyledChannel>
-                  <AgentChatChannelIcon
-                    channel={channel}
-                    size={theme.icon.size.sm}
-                  />
-                  {channel.name}
-                </StyledChannel>
-              ) : (
-                <StyledEmptyValue>{t`None`}</StyledEmptyValue>
-              )}
-            </DetailsRow>
-            <DetailsRow
-              labelWidth={AI_CHAT_THREAD_DETAILS_LABEL_WIDTH_IN_PX}
-              startIcon={<IconUsers size={themeCssVariables.icon.size.md} />}
-              label={t`Assignee`}
-              action={
-                canChangeAssignee && (
-                  <LightIconButton
-                    aria-label={t`Change assignee`}
-                    title={t`Change assignee`}
-                    emphasis="subtle"
-                    onClick={() => {
-                      closeDropdown(dropdownId);
-                      openAssignAiChatInSidePanel([threadId]);
-                    }}
-                  >
-                    <IconPencil />
-                  </LightIconButton>
-                )
-              }
-            >
-              {isDefined(assignee) ? (
-                <RecordChip
-                  objectNameSingular={CoreObjectNameSingular.WorkspaceMember}
-                  record={{ ...assignee, __typename: 'WorkspaceMember' }}
-                />
-              ) : (
-                <StyledEmptyValue>{t`None`}</StyledEmptyValue>
-              )}
-            </DetailsRow>
+                ) : (
+                  <StyledEmptyValue>{t`None`}</StyledEmptyValue>
+                )}
+              </DetailsRow>
+            )}
           </StyledDetails>
         </DropdownContent>
       </DropdownRoot>

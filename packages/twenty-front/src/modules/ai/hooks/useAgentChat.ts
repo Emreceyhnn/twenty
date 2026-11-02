@@ -5,7 +5,11 @@ import { t } from '@lingui/core/macro';
 import { useStore } from 'jotai';
 import { useCallback } from 'react';
 import { type ExtendedUIMessage } from 'twenty-shared/ai';
-import { isDefined, tipTapDocumentToMarkdown } from 'twenty-shared/utils';
+import {
+  isDefined,
+  isNonEmptyArray,
+  tipTapDocumentToMarkdown,
+} from 'twenty-shared/utils';
 import { useToast } from 'twenty-ui/components/feedback';
 import { v4 } from 'uuid';
 
@@ -23,9 +27,17 @@ import { useRefreshAgentChatThreadPermissions } from '@/ai/hooks/useRefreshAgent
 import { useWarnAboutParticipantMentionsNotAdded } from '@/ai/hooks/useWarnAboutParticipantMentionsNotAdded';
 import { agentChatDraftsByThreadIdState } from '@/ai/states/agentChatDraftsByThreadIdState';
 import { agentChatLastSentBrowsingContextFamilyState } from '@/ai/states/agentChatLastSentBrowsingContextFamilyState';
-import { agentChatSelectedFilesState } from '@/ai/states/agentChatSelectedFilesState';
 import { agentChatSentMessageHandOffState } from '@/ai/states/agentChatSentMessageHandOffState';
-import { agentChatUploadedFilesState } from '@/ai/states/agentChatUploadedFilesState';
+import { agentChatDirectMessageDraftFamilySelector } from '@/ai/states/selectors/agentChatDirectMessageDraftFamilySelector';
+import { agentChatDirectMessageDraftsState } from '@/ai/states/agentChatDirectMessageDraftsState';
+import { currentUserWorkspaceState } from '@/auth/states/currentUserWorkspaceState';
+import { agentChatDirectMessageSendingFamilyState } from '@/ai/states/agentChatDirectMessageSendingFamilyState';
+import { agentChatThreadRecordFamilySelector } from '@/ai/states/selectors/agentChatThreadRecordFamilySelector';
+import { getAgentChatAttachmentAtoms } from '@/ai/utils/getAgentChatAttachmentAtoms';
+import { getDirectMessagePeerId } from '@/ai/utils/getDirectMessagePeerId';
+import { mergeAgentChatDrafts } from '@/ai/utils/mergeAgentChatDrafts';
+import { useHandoffDirectMessageDraft } from '@/ai/hooks/useHandoffDirectMessageDraft';
+import { useLoadDirectMessages } from '@/ai/hooks/useLoadDirectMessages';
 import { currentAiChatThreadState } from '@/ai/states/currentAiChatThreadState';
 import { agentChatErrorFamilyState } from '@/ai/states/agentChatErrorFamilyState';
 import { agentChatIsAwaitingFirstChunkFamilyState } from '@/ai/states/agentChatIsAwaitingFirstChunkFamilyState';
@@ -71,10 +83,8 @@ export const useAgentChat = () => {
   const { refreshAgentChatThreadPermissions } =
     useRefreshAgentChatThreadPermissions();
   const store = useStore();
-
-  const setAgentChatUploadedFiles = useSetAtomState(
-    agentChatUploadedFilesState,
-  );
+  const { handoffDirectMessageDraft } = useHandoffDirectMessageDraft();
+  const { loadDirectMessages } = useLoadDirectMessages();
 
   const setAgentChatDraftsByThreadId = useSetAtomState(
     agentChatDraftsByThreadIdState,
@@ -84,14 +94,51 @@ export const useAgentChat = () => {
     const newAiChatThreadId = store.get(newAiChatThreadIdState.atom);
     const threadId =
       store.get(currentAiChatThreadState.atom) ?? newAiChatThreadId;
-    const isNewChat = threadId === newAiChatThreadId;
+    const directMessageDraft = store.get(
+      agentChatDirectMessageDraftFamilySelector.selectorFamily(threadId),
+    );
+    const isPendingDirectMessage =
+      isDefined(directMessageDraft) &&
+      !isDefined(directMessageDraft.canonicalThreadId);
+    const directMessagePeerId =
+      directMessageDraft?.peerWorkspaceMemberId ??
+      getDirectMessagePeerId({
+        thread: store.get(
+          agentChatThreadRecordFamilySelector.selectorFamily(threadId),
+        ),
+        currentWorkspaceMemberId: store.get(currentWorkspaceMemberState.atom)
+          ?.id,
+      });
+    const isDirectMessage = isDefined(directMessagePeerId);
+    const sendingWorkspaceId = store.get(currentWorkspaceState.atom)?.id;
+    const sendingWorkspaceMemberId = store.get(
+      currentWorkspaceMemberState.atom,
+    )?.id;
+    const sendingUserWorkspace = store.get(currentUserWorkspaceState.atom);
+    const isSameSendSession = () =>
+      store.get(currentWorkspaceState.atom)?.id === sendingWorkspaceId &&
+      store.get(currentWorkspaceMemberState.atom)?.id ===
+        sendingWorkspaceMemberId &&
+      store.get(currentUserWorkspaceState.atom) === sendingUserWorkspace;
+    const sendingAtom =
+      agentChatDirectMessageSendingFamilyState.atomFamily(threadId);
+
+    if (isPendingDirectMessage && store.get(sendingAtom)) {
+      return;
+    }
+
+    const { selectedFilesAtom, uploadedFilesAtom } =
+      getAgentChatAttachmentAtoms({ threadId, isDirectMessage });
+    const isNewChat = threadId === newAiChatThreadId || isPendingDirectMessage;
     const serializedContentToSend =
       store.get(agentChatDraftsByThreadIdState.atom)[threadId] ?? '';
     const contentToSend = tipTapDocumentToMarkdown(
       serializedContentToSend,
     ).trim();
 
-    if (contentToSend === '') {
+    const agentChatUploadedFiles = store.get(uploadedFilesAtom);
+
+    if (contentToSend === '' && !isNonEmptyArray(agentChatUploadedFiles)) {
       return;
     }
 
@@ -104,9 +151,9 @@ export const useAgentChat = () => {
       return;
     }
 
-    const agentChatSelectedFiles = store.get(agentChatSelectedFilesState.atom);
+    const agentChatSelectedFiles = store.get(selectedFilesAtom);
 
-    if (agentChatSelectedFiles.length > 0) {
+    if (isNonEmptyArray(agentChatSelectedFiles)) {
       enqueueToast({
         status: 'error',
         children: t`Wait for the attachments to finish uploading.`,
@@ -114,8 +161,6 @@ export const useAgentChat = () => {
 
       return;
     }
-
-    const agentChatUploadedFiles = store.get(agentChatUploadedFilesState.atom);
 
     // Selects the new chat when the composer wrote to it before the chat list loaded
     setCurrentAiChatThread(threadId);
@@ -130,7 +175,7 @@ export const useAgentChat = () => {
     });
 
     const browsingContext = getBrowsingContext();
-    const lastSentBrowsingContextAtom =
+    let lastSentBrowsingContextAtom =
       agentChatLastSentBrowsingContextFamilyState.atomFamily(threadId);
     const lastSentBrowsingContext = store.get(lastSentBrowsingContextAtom);
     const isBrowsingContextChanged =
@@ -143,10 +188,17 @@ export const useAgentChat = () => {
       : null;
     const messageId = v4();
     const optimisticMessageCreatedAt = new Date().toISOString();
-    const rollbackOptimisticRestore = applyOptimisticRestore({
-      threadId,
-      optimisticUpdatedAt: optimisticMessageCreatedAt,
-    });
+    const hasSavedDirectMessage = isDefined(
+      store.get(agentChatThreadRecordFamilySelector.selectorFamily(threadId))
+        ?.lastActivityAt,
+    );
+    const rollbackOptimisticRestore =
+      isDirectMessage && !hasSavedDirectMessage
+        ? () => {}
+        : applyOptimisticRestore({
+            threadId,
+            optimisticUpdatedAt: optimisticMessageCreatedAt,
+          });
 
     const optimisticUserMessage: ExtendedUIMessage = {
       id: messageId,
@@ -163,9 +215,9 @@ export const useAgentChat = () => {
       status: 'sent',
     };
 
-    const messagesAtom = agentChatMessagesFamilyState.atomFamily({ threadId });
-    const errorAtom = agentChatErrorFamilyState.atomFamily({ threadId });
-    const isAwaitingFirstChunkAtom =
+    let messagesAtom = agentChatMessagesFamilyState.atomFamily({ threadId });
+    let errorAtom = agentChatErrorFamilyState.atomFamily({ threadId });
+    let isAwaitingFirstChunkAtom =
       agentChatIsAwaitingFirstChunkFamilyState.atomFamily({ threadId });
     const removeOptimisticUserMessage = () => {
       store.set(messagesAtom, (messages) =>
@@ -199,40 +251,86 @@ export const useAgentChat = () => {
       ({ workspaceMemberId }) => workspaceMemberId !== currentWorkspaceMemberId,
     );
 
-    setAgentChatUploadedFiles([]);
+    store.set(uploadedFilesAtom, []);
+    if (isPendingDirectMessage) {
+      store.set(sendingAtom, true);
+    }
 
     try {
       const { data } = await apolloClient.mutate({
         mutation: SendChatMessageDocument,
         variables: {
           threadId,
+          directMessageWorkspaceMemberId: isPendingDirectMessage
+            ? directMessagePeerId
+            : undefined,
+          isAssistantMentioned:
+            isAgentChatAssistantMentionedInSerializedDocument(
+              serializedContentToSend,
+            ),
           text: contentToSend,
           messageId,
           browsingContext: browsingContextToSend,
           modelId: modelIdForRequest,
-          fileAttachments:
-            fileAttachments.length > 0 ? fileAttachments : undefined,
-          mentionedWorkspaceMemberIds:
-            participantMentions.length > 0
-              ? participantMentions.map(
-                  ({ workspaceMemberId }) => workspaceMemberId,
-                )
-              : undefined,
-          channelId: isNewChat
-            ? (store.get(agentChatNewThreadChannelIdState.atom) ?? undefined)
+          fileAttachments: isNonEmptyArray(fileAttachments)
+            ? fileAttachments
             : undefined,
-          shouldAssistantReply:
-            aiModels.length > 0 &&
-            (!store.get(agentChatIsAssistantOffState.atom) ||
-              isAgentChatAssistantMentionedInSerializedDocument(
-                serializedContentToSend,
-              )),
+          mentionedWorkspaceMemberIds: isNonEmptyArray(participantMentions)
+            ? participantMentions.map(
+                ({ workspaceMemberId }) => workspaceMemberId,
+              )
+            : undefined,
+          channelId:
+            isNewChat && !isDirectMessage
+              ? (store.get(agentChatNewThreadChannelIdState.atom) ?? undefined)
+              : undefined,
+          shouldAssistantReply: isDirectMessage
+            ? undefined
+            : aiModels.length > 0 &&
+              (!store.get(agentChatIsAssistantOffState.atom) ||
+                isAgentChatAssistantMentionedInSerializedDocument(
+                  serializedContentToSend,
+                )),
         },
       });
+
+      const canonicalThreadId = data?.sendChatMessage.threadId ?? threadId;
+
+      if (isDirectMessage && !isSameSendSession()) {
+        return;
+      }
+
+      if (isPendingDirectMessage) {
+        await handoffDirectMessageDraft({
+          draftId: threadId,
+          threadId: canonicalThreadId,
+        });
+        if (!isSameSendSession()) {
+          return;
+        }
+        store.set(isAwaitingFirstChunkAtom, false);
+        messagesAtom = agentChatMessagesFamilyState.atomFamily({
+          threadId: canonicalThreadId,
+        });
+        errorAtom = agentChatErrorFamilyState.atomFamily({
+          threadId: canonicalThreadId,
+        });
+        isAwaitingFirstChunkAtom =
+          agentChatIsAwaitingFirstChunkFamilyState.atomFamily({
+            threadId: canonicalThreadId,
+          });
+        lastSentBrowsingContextAtom =
+          agentChatLastSentBrowsingContextFamilyState.atomFamily(
+            canonicalThreadId,
+          );
+        void loadDirectMessages('refresh');
+      }
 
       const isAssistantReplying =
         data?.sendChatMessage.queued === true ||
         isDefined(data?.sendChatMessage.streamId);
+
+      store.set(isAwaitingFirstChunkAtom, isAssistantReplying);
 
       if (isAssistantReplying) {
         // The stream may already have set a newer credits-exhausted error; don't clear it.
@@ -249,11 +347,14 @@ export const useAgentChat = () => {
       }
 
       // Filed after the send: a failed send restores the draft, so the retry files it.
-      getConversationTargetsFromSerializedDocument(
+      for (const conversationTarget of getConversationTargetsFromSerializedDocument(
         serializedContentToSend,
-      ).forEach((conversationTarget) => {
-        void attachChatThreadToRecord({ threadId, ...conversationTarget });
-      });
+      )) {
+        void attachChatThreadToRecord({
+          threadId: canonicalThreadId,
+          ...conversationTarget,
+        });
+      }
       warnAboutParticipantMentionsNotAdded({
         participantMentions,
         addedWorkspaceMemberIds:
@@ -266,7 +367,7 @@ export const useAgentChat = () => {
 
       // The send created the thread. Its permissions load before it stops
       // being the new chat, so its composer never shows as loading.
-      if (isNewChat) {
+      if (isNewChat && !isPendingDirectMessage) {
         await refreshAgentChatThreadPermissions([threadId]);
         store.set(newAiChatThreadIdState.atom, v4());
         store.set(agentChatNewThreadChannelIdState.atom, null);
@@ -278,13 +379,37 @@ export const useAgentChat = () => {
 
       dispatchBrowserEvent(AGENT_CHAT_REFETCH_MESSAGES_EVENT_NAME);
     } catch (error) {
+      if (isDirectMessage && !isSameSendSession()) {
+        return;
+      }
       rollbackOptimisticRestore();
+
+      const restoredThreadId =
+        store.get(agentChatDirectMessageDraftsState.atom)[threadId]
+          ?.canonicalThreadId ?? threadId;
+      messagesAtom = agentChatMessagesFamilyState.atomFamily({
+        threadId: restoredThreadId,
+      });
+      errorAtom = agentChatErrorFamilyState.atomFamily({
+        threadId: restoredThreadId,
+      });
+      isAwaitingFirstChunkAtom =
+        agentChatIsAwaitingFirstChunkFamilyState.atomFamily({
+          threadId: restoredThreadId,
+        });
+      const restoredUploadedFilesAtom = getAgentChatAttachmentAtoms({
+        threadId: restoredThreadId,
+        isDirectMessage,
+      }).uploadedFilesAtom;
 
       setAgentChatDraftsByThreadId((prev) => ({
         ...prev,
-        [threadId]: serializedContentToSend,
+        [restoredThreadId]: mergeAgentChatDrafts({
+          firstDraft: serializedContentToSend,
+          secondDraft: prev[restoredThreadId] ?? '',
+        }),
       }));
-      setAgentChatUploadedFiles((currentUploadedFiles) => [
+      store.set(restoredUploadedFilesAtom, (currentUploadedFiles) => [
         ...agentChatUploadedFiles,
         ...currentUploadedFiles,
       ]);
@@ -296,14 +421,21 @@ export const useAgentChat = () => {
         store.set(currentWorkspaceState.atom, markWorkspaceCreditsExhausted);
       }
 
-      dispatchBrowserEvent(AGENT_CHAT_RESTORE_EDITOR_CONTENT_EVENT_NAME, {
-        content: serializedContentToSend,
-      });
+      if (store.get(currentAiChatThreadState.atom) === restoredThreadId) {
+        dispatchBrowserEvent(AGENT_CHAT_RESTORE_EDITOR_CONTENT_EVENT_NAME, {
+          content:
+            store.get(agentChatDraftsByThreadIdState.atom)[restoredThreadId] ??
+            '',
+        });
+      }
+    } finally {
+      store.set(sendingAtom, false);
     }
   }, [
     store,
     getBrowsingContext,
-    setAgentChatUploadedFiles,
+    handoffDirectMessageDraft,
+    loadDirectMessages,
     setAgentChatDraftsByThreadId,
     modelIdForRequest,
     aiModels,

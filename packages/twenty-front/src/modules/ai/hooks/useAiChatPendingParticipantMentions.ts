@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { useAiChatDirectMessage } from '@/ai/hooks/useAiChatDirectMessage';
 
 import { agentChatDraftsByThreadIdState } from '@/ai/states/agentChatDraftsByThreadIdState';
 import { currentAiChatThreadState } from '@/ai/states/currentAiChatThreadState';
@@ -21,15 +22,18 @@ export const useAiChatPendingParticipantMentions = () => {
     draftKey,
   );
   const currentWorkspaceMember = useAtomStateValue(currentWorkspaceMemberState);
+  const { isDirectMessage } = useAiChatDirectMessage();
 
   const participantMentions = useMemo(
     () => getParticipantMentionsFromSerializedDocument(serializedDraft),
     [serializedDraft],
   );
 
-  return filterNewParticipantMentions({
-    participantMentions,
-    thread,
-    currentWorkspaceMemberId: currentWorkspaceMember?.id,
-  });
+  return isDirectMessage
+    ? []
+    : filterNewParticipantMentions({
+        participantMentions,
+        thread,
+        currentWorkspaceMemberId: currentWorkspaceMember?.id,
+      });
 };

@@ -8,7 +8,9 @@ import {
 import { isDefined } from 'twenty-shared/utils';
 
 import { AGENT_CHAT_THREAD_LIST_FILTER } from '@/ai/constants/AgentChatThreadListFilter';
-import { AGENT_CHAT_THREAD_LIST_RECORD_GQL_FIELDS } from '@/ai/constants/AgentChatThreadListRecordGqlFields';
+import { getAgentChatThreadListRecordGqlFields } from '@/ai/utils/getAgentChatThreadListRecordGqlFields';
+import { currentWorkspaceState } from '@/auth/states/currentWorkspaceState';
+import { FeatureFlagKey } from '~/generated-metadata/graphql';
 import { type AgentChatThreadRecord } from '@/ai/types/AgentChatThreadRecord';
 import { getAgentChatThreadParticipantFromRecord } from '@/ai/utils/getAgentChatThreadParticipantFromRecord';
 import { currentWorkspaceMemberState } from '@/auth/states/currentWorkspaceMemberState';
@@ -51,13 +53,24 @@ export const useFetchAgentChatThreadsPage = () => {
       const currentWorkspaceMemberId = store.get(
         currentWorkspaceMemberState.atom,
       )?.id;
+      const isDirectMessageIdentityEnabled =
+        store
+          .get(currentWorkspaceState.atom)
+          ?.featureFlags?.some(
+            ({ key, value }) =>
+              key ===
+                FeatureFlagKey.IS_AGENT_CHAT_DIRECT_MESSAGE_IDENTITY_ENABLED &&
+              value,
+          ) ?? false;
 
       const result = await apolloCoreClient
         .query<RecordGqlOperationFindManyResult>({
           query: generateFindManyRecordsQuery({
             objectMetadataItem: chatObjectMetadataItem,
             objectMetadataItems: store.get(objectMetadataItemsSelector.atom),
-            recordGqlFields: AGENT_CHAT_THREAD_LIST_RECORD_GQL_FIELDS,
+            recordGqlFields: getAgentChatThreadListRecordGqlFields(
+              isDirectMessageIdentityEnabled,
+            ),
             objectPermissionsByObjectMetadataId,
           }),
           variables: {

@@ -6,13 +6,14 @@ import { type PermissionsRowAccessEvaluationRequest } from 'src/engine/permissio
 import { areRecordGrantsHeldToRowLevelPermissions } from 'src/engine/permissions/combine/utils/are-record-grants-held-to-row-level-permissions.util';
 import { resolvePermissionsRowAccessOutcome } from 'src/engine/permissions/combine/utils/resolve-permissions-row-access-outcome.util';
 import { findPermissionsCreatorAdmittedRecordIds } from 'src/engine/permissions/private-record/utils/find-permissions-creator-admitted-record-ids.util';
+import { findDirectMessagePairAdmittedRecordIds } from 'src/engine/permissions/private-record/utils/find-direct-message-pair-admitted-record-ids.util';
 import { isShareOnlyWhilePrivateRecordFlagDisabled } from 'src/engine/permissions/private-record/utils/is-share-only-while-private-record-flag-disabled.util';
 import { findPermissionsShareAdmittedRecordIds } from 'src/engine/permissions/record-share/utils/find-permissions-share-admitted-record-ids.util';
 import { findPermissionsRlsAdmittedRecordIds } from 'src/engine/permissions/rls/utils/find-permissions-rls-admitted-record-ids.util';
 import { findRowLevelPermissionMatchingRecordIds } from 'src/engine/permissions/rls/utils/find-row-level-permission-matching-record-ids.util';
 import { findPermissionsObjectAdmittedRecordIds } from 'src/engine/permissions/role/utils/find-permissions-object-admitted-record-ids.util';
 
-export const findPermissionsAdmittedRecordIds = async (
+const findGrantedRecordIds = async (
   request: PermissionsRowAccessEvaluationRequest,
 ): Promise<Set<string>> => {
   const { records } = request;
@@ -58,4 +59,16 @@ export const findPermissionsAdmittedRecordIds = async (
     ...(await findPermissionsShareAdmittedRecordIds(recordGrantRequest)),
     ...(await findPermissionsCreatorAdmittedRecordIds(recordGrantRequest)),
   ]);
+};
+
+export const findPermissionsAdmittedRecordIds = async (
+  request: PermissionsRowAccessEvaluationRequest,
+): Promise<Set<string>> => {
+  const pairAdmittedRecordIds =
+    await findDirectMessagePairAdmittedRecordIds(request);
+
+  return findGrantedRecordIds({
+    ...request,
+    records: request.records.filter(({ id }) => pairAdmittedRecordIds.has(id)),
+  });
 };

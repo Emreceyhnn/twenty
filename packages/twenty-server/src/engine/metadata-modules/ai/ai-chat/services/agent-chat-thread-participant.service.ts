@@ -301,20 +301,30 @@ export class AgentChatThreadParticipantService {
   async moveMembersToInbox({
     participantWorkspaceMemberIds,
     isMention,
+    transactionScope,
+    shouldIncludeSender = false,
+    senderLastReadAt,
     ...args
   }: AgentChatThreadAccessArgs & {
     participantWorkspaceMemberIds: string[];
     isMention: boolean;
+    transactionScope?: WorkspaceTransactionScope;
+    shouldIncludeSender?: boolean;
+    senderLastReadAt?: string;
   }): Promise<void> {
     const memberIds = [...new Set(participantWorkspaceMemberIds)].filter(
-      (memberId) => memberId !== args.workspaceMemberId,
+      (memberId) => shouldIncludeSender || memberId !== args.workspaceMemberId,
     );
 
     if (!isNonEmptyArray(memberIds)) {
       return;
     }
 
-    await this.assertCanMoveMembersToInbox({ ...args, memberIds });
+    await this.assertCanMoveMembersToInbox({
+      ...args,
+      memberIds,
+      transactionScope,
+    });
 
     const { workspaceId, threadId } = args;
 
@@ -330,6 +340,26 @@ export class AgentChatThreadParticipantService {
         flatObjectMetadataMaps,
         'agentChatThreadParticipant',
       ) ?? throwAgentChatThreadNotFound();
+
+    if (isDefined(transactionScope)) {
+      const writes = await this.writeMembersToInbox({
+        scope: transactionScope,
+        workspaceId,
+        threadId,
+        memberIds,
+        isMention,
+        participantObjectMetadata,
+        senderWorkspaceMemberId: args.workspaceMemberId,
+        senderLastReadAt,
+      });
+
+      transactionScope.afterCommit(() =>
+        this.emitParticipantWrites({ workspaceId, writes }),
+      );
+
+      return;
+    }
+
     const writes = await this.workspaceOrmManager.executeInWorkspaceContext(
       () =>
         this.workspaceOrmManager.runInWorkspaceTransaction((scope) =>
@@ -340,6 +370,8 @@ export class AgentChatThreadParticipantService {
             memberIds,
             isMention,
             participantObjectMetadata,
+            senderWorkspaceMemberId: args.workspaceMemberId,
+            senderLastReadAt,
           }),
         ),
       buildSystemAuthContext(workspaceId),
@@ -588,26 +620,33 @@ export class AgentChatThreadParticipantService {
     workspaceId,
     threadId,
     additionalWorkspaceMemberIds,
+    transactionScope,
   }: {
     workspaceId: string;
     threadId: string;
     additionalWorkspaceMemberIds: string[];
+    transactionScope?: WorkspaceTransactionScope;
   }): Promise<number> {
-    const [{ memberCount }] = await this.threadRepository.query(
-      workspaceId,
-      ({ manager }) =>
-        manager.query<{ memberCount: number }[]>(
-          `SELECT COUNT(DISTINCT member)::int AS "memberCount" FROM (
+    const countMembersQuery = `SELECT COUNT(DISTINCT member)::int AS "memberCount" FROM (
              SELECT "workspaceMemberId" AS member
              FROM ${getAgentChatThreadParticipantTable(workspaceId)}
              WHERE "threadId" = $1
              UNION SELECT unnest($2::uuid[])
-           ) members`,
-          [threadId, additionalWorkspaceMemberIds],
-        ),
-    );
+           ) members`;
+    const countMembersParameters = [threadId, additionalWorkspaceMemberIds];
+    const [{ memberCount }] = isDefined(transactionScope)
+      ? await transactionScope.executeRawQuery(
+          countMembersQuery,
+          countMembersParameters,
+        )
+      : await this.threadRepository.query(workspaceId, ({ manager }) =>
+          manager.query<{ memberCount: number }[]>(
+            countMembersQuery,
+            countMembersParameters,
+          ),
+        );
 
-    return memberCount;
+    return memberCount as number;
   }
 
   // Over the chats the member can open and follows, the way the inbox lists
@@ -760,21 +799,30 @@ export class AgentChatThreadParticipantService {
 
   private async assertCanMoveMembersToInbox({
     memberIds,
+    transactionScope,
     ...args
-  }: AgentChatThreadAccessArgs & { memberIds: string[] }): Promise<void> {
+  }: AgentChatThreadAccessArgs & {
+    memberIds: string[];
+    transactionScope?: WorkspaceTransactionScope;
+  }): Promise<void> {
     await this.sharingService.getThreadWithAccess({
       ...args,
       operationType: 'update',
+      transactionScope,
     });
 
+    const recipientMemberIds = memberIds.filter(
+      (memberId) => memberId !== args.workspaceMemberId,
+    );
     const eligibleMemberIds =
       await this.sharingService.findEligibleParticipantWorkspaceMemberIds({
         ...args,
-        memberIds,
+        memberIds: recipientMemberIds,
         shouldConsiderNewShares: false,
+        transactionScope,
       });
 
-    if (eligibleMemberIds.length !== memberIds.length) {
+    if (eligibleMemberIds.length !== recipientMemberIds.length) {
       throwAgentChatThreadNotFound();
     }
   }
@@ -787,11 +835,15 @@ export class AgentChatThreadParticipantService {
     memberIds,
     isMention,
     participantObjectMetadata,
+    senderWorkspaceMemberId,
+    senderLastReadAt,
   }: Pick<AgentChatThreadAccessArgs, 'workspaceId' | 'threadId'> & {
     scope: WorkspaceTransactionScope;
     memberIds: string[];
     isMention: boolean;
     participantObjectMetadata: FlatObjectMetadata;
+    senderWorkspaceMemberId: string;
+    senderLastReadAt?: string;
   }): Promise<AgentChatThreadParticipantWrite[]> {
     const participantRepository =
       scope.getRepository<AgentChatThreadParticipantRow>(
@@ -824,6 +876,10 @@ export class AgentChatThreadParticipantService {
           threadId,
           workspaceMemberId,
           lastMentionedAt,
+          lastReadAt:
+            workspaceMemberId === senderWorkspaceMemberId
+              ? (senderLastReadAt ?? null)
+              : null,
         })),
         { onConflictDoNothing: true },
       );
@@ -841,7 +897,10 @@ export class AgentChatThreadParticipantService {
       await participantRepository.update(
         { id: participantBefore.id },
         {
-          lastReadAt: null,
+          lastReadAt:
+            participantBefore.workspaceMemberId === senderWorkspaceMemberId
+              ? (senderLastReadAt ?? null)
+              : null,
           archivedAt: null,
           snoozedUntil: null,
           isSubscribed: true,

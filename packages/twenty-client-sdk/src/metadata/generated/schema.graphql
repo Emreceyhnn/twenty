@@ -3482,7 +3482,7 @@ type Mutation {
   runMyApplicationHealthCheck(applicationId: UUID!): ApplicationHealthCheckResult
   saveImapSmtpCaldavAccount(connectionParameters: EmailAccountConnectionParameters!, handle: String!, id: UUID): ImapSmtpCaldavConnectionSuccess!
   sendAppChannelMessage(input: SendAppChannelMessageInput!): SendAppChannelMessageOutput!
-  sendChatMessage(browsingContext: JSON, channelId: UUID, fileAttachments: [FileAttachmentInput!], isAssistantMentioned: Boolean, isAssistantParticipant: Boolean, mentionedWorkspaceMemberIds: [UUID!], messageId: UUID!, modelId: String, recipientWorkspaceMemberIds: [UUID!], shouldAssistantReply: Boolean, text: String!, threadId: UUID!): SendChatMessageResult!
+  sendChatMessage(browsingContext: JSON, channelId: UUID, directMessageWorkspaceMemberId: UUID, fileAttachments: [FileAttachmentInput!], isAssistantMentioned: Boolean, isAssistantParticipant: Boolean, mentionedWorkspaceMemberIds: [UUID!], messageId: UUID!, modelId: String, recipientWorkspaceMemberIds: [UUID!], shouldAssistantReply: Boolean, text: String!, threadId: UUID!): SendChatMessageResult!
   sendEmail(input: SendEmailInput!): SendEmailOutput!
   sendInboxMessage(input: SendInboxMessageInput!): SendInboxMessageResult!
   sendInvitations(emails: [String!]!, roleId: UUID): SendInvitations!
@@ -4135,6 +4135,7 @@ type Query {
   currentUserApplicationAuthorizations: [ApplicationAuthorization!]!
   currentUserSessions: [UserSession!]!
   currentWorkspace: Workspace!
+  directMessageThread(peerWorkspaceMemberId: UUID!): AgentChatThread
   enterpriseCheckoutSession(billingInterval: String): String
   enterprisePortalSession(returnUrlPath: String): String
   enterpriseSubscriptionStatus: EnterpriseSubscriptionStatusDTO
@@ -4617,6 +4618,7 @@ type SendChatMessageResult {
   queued: Boolean!
   recipientParticipantWorkspaceMemberIds: [UUID!]
   streamId: String
+  threadId: UUID
 }
 
 input SendEmailAttachmentInput {

@@ -11,6 +11,8 @@ export const SEND_CHAT_MESSAGE = gql`
     $mentionedWorkspaceMemberIds: [UUID!]
     $channelId: UUID
     $shouldAssistantReply: Boolean
+    $directMessageWorkspaceMemberId: UUID
+    $isAssistantMentioned: Boolean
   ) {
     sendChatMessage(
       threadId: $threadId
@@ -22,8 +24,11 @@ export const SEND_CHAT_MESSAGE = gql`
       mentionedWorkspaceMemberIds: $mentionedWorkspaceMemberIds
       channelId: $channelId
       shouldAssistantReply: $shouldAssistantReply
+      directMessageWorkspaceMemberId: $directMessageWorkspaceMemberId
+      isAssistantMentioned: $isAssistantMentioned
     ) {
       messageId
+      threadId
       queued
       streamId
       mentionedParticipantWorkspaceMemberIds

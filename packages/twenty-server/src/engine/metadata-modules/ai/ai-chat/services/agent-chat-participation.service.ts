@@ -1,161 +1,244 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 
 import { doNotTranslate } from 'twenty-shared/i18n';
-import { FeatureFlagKey } from 'twenty-shared/types';
+import { isDefined } from 'twenty-shared/utils';
 
-import { CacheLockService } from 'src/engine/core-modules/cache-lock/cache-lock.service';
-import { FeatureFlagService } from 'src/engine/core-modules/feature-flag/services/feature-flag.service';
-
-import { AgentChatService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat.service';
+import { AgentChatSharingService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-sharing.service';
+import { AgentChatThreadParticipantService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-thread-participant.service';
+import { AgentChatThreadRecordEventService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-thread-record-event.service';
 import { AgentChatThreadService } from 'src/engine/metadata-modules/ai/ai-chat/services/agent-chat-thread.service';
+import { type AgentChatAssistantParticipationArgs } from 'src/engine/metadata-modules/ai/ai-chat/types/agent-chat-assistant-participation-args.type';
+import { type AgentChatMessageParticipationResult } from 'src/engine/metadata-modules/ai/ai-chat/types/agent-chat-message-participation-result.type';
 import { type AgentChatThreadAccessArgs } from 'src/engine/metadata-modules/ai/ai-chat/types/agent-chat-thread-access-args.type';
+import { getAgentChatDirectMessagePeerOrThrow } from 'src/engine/metadata-modules/ai/ai-chat/utils/get-agent-chat-direct-message-peer-or-throw.util';
 import { formatErrorWithCause } from 'src/engine/metadata-modules/ai/ai-chat/utils/format-error-with-cause.util';
-
-const AGENT_CHAT_MESSAGE_LOCK_KEY_PREFIX = 'agent-chat-message:';
-const AGENT_CHAT_MESSAGE_LOCK_WAIT_MS = 30_000;
-const AGENT_CHAT_MESSAGE_LOCK_RETRY_INTERVAL_MS = 100;
-
-type AgentChatMessageParticipationArgs = AgentChatThreadAccessArgs & {
-  messageId: string;
-  isAssistantMentioned: boolean;
-  recipientWorkspaceMemberIds: string[];
-  mentionedWorkspaceMemberIds?: string[];
-};
+import { AgentConversationWriterService } from 'src/engine/metadata-modules/ai/ai-history/services/agent-conversation-writer.service';
+import { type AgentHistoryTransactionScope } from 'src/engine/metadata-modules/ai/ai-history/types/agent-history-transaction-scope.type';
+import { type WorkspaceTransactionScope } from 'src/engine/twenty-orm/types/workspace-transaction-scope.type';
 
 @Injectable()
 export class AgentChatParticipationService {
   private readonly logger = new Logger(AgentChatParticipationService.name);
 
+  @Inject(AgentChatThreadRecordEventService)
+  private readonly threadRecordEventService: AgentChatThreadRecordEventService;
+
   constructor(
-    private readonly chatService: AgentChatService,
     private readonly threadService: AgentChatThreadService,
-    private readonly cacheLockService: CacheLockService,
-    private readonly featureFlagService: FeatureFlagService,
+    private readonly sharingService: AgentChatSharingService,
+    private readonly participantService: AgentChatThreadParticipantService,
+    private readonly conversationWriterService: AgentConversationWriterService,
   ) {}
 
-  runWithMessageLock<TResult>({
-    workspaceId,
-    threadId,
-    work,
-  }: Pick<AgentChatThreadAccessArgs, 'workspaceId' | 'threadId'> & {
-    work: () => Promise<TResult>;
-  }): Promise<TResult> {
-    return this.cacheLockService.withLock(
-      work,
-      `${AGENT_CHAT_MESSAGE_LOCK_KEY_PREFIX}${workspaceId}:${threadId}`,
-      {
-        ms: AGENT_CHAT_MESSAGE_LOCK_RETRY_INTERVAL_MS,
-        maxRetries: Math.ceil(
-          AGENT_CHAT_MESSAGE_LOCK_WAIT_MS /
-            AGENT_CHAT_MESSAGE_LOCK_RETRY_INTERVAL_MS,
-        ),
-      },
-    );
-  }
+  async persistMessage<TSavedMessage extends { id: string }>({
+    participation,
+    persistMessage,
+    ...args
+  }: AgentChatThreadAccessArgs & {
+    participation?: AgentChatAssistantParticipationArgs;
+    persistMessage: (
+      scope: AgentHistoryTransactionScope,
+    ) => Promise<TSavedMessage>;
+  }): Promise<TSavedMessage & AgentChatMessageParticipationResult> {
+    const thread = await this.threadService.getWritableThread(args);
+    const peerWorkspaceMemberId =
+      thread.conversationType === 'DIRECT_MESSAGE'
+        ? getAgentChatDirectMessagePeerOrThrow({
+            thread,
+            workspaceMemberId: args.workspaceMemberId,
+          })
+        : undefined;
+    const effectiveParticipation = isDefined(peerWorkspaceMemberId)
+      ? {
+          ...participation,
+          recipientWorkspaceMemberIds: [peerWorkspaceMemberId],
+        }
+      : participation;
+    const authContext = await this.sharingService.getAuthContext(args);
 
-  async sendMessageWithParticipation<TSentMessage extends object>({
-    sendMessage,
-    ...participationArgs
-  }: AgentChatMessageParticipationArgs & {
-    sendMessage: (isAiChatInboxEnabled: boolean) => Promise<TSentMessage>;
-  }): Promise<
-    TSentMessage & { recipientParticipantWorkspaceMemberIds: string[] }
-  > {
-    const isAiChatInboxEnabled = await this.featureFlagService.isFeatureEnabled(
-      FeatureFlagKey.IS_AI_CHAT_INBOX_ENABLED,
-      participationArgs.workspaceId,
-    );
+    return this.conversationWriterService.runInTransaction({
+      workspaceId: args.workspaceId,
+      authContext,
+      work: async (scope) => {
+        await this.sharingService.lockThreadForWriteInTransaction({
+          workspaceId: args.workspaceId,
+          threadId: args.threadId,
+          transactionScope: scope,
+        });
 
-    if (!isAiChatInboxEnabled) {
-      const sentMessage = await sendMessage(false);
+        await this.participantService.resolveMentionInTransaction({
+          ...args,
+          scope,
+        });
 
-      return { ...sentMessage, recipientParticipantWorkspaceMemberIds: [] };
-    }
+        const appliedParticipation = isDefined(effectiveParticipation)
+          ? await this.threadService.applyAssistantParticipation({
+              ...args,
+              ...effectiveParticipation,
+              transactionScope: scope,
+            })
+          : undefined;
 
-    return this.runWithMessageLock({
-      workspaceId: participationArgs.workspaceId,
-      threadId: participationArgs.threadId,
-      work: async () => {
-        const sentMessage = await sendMessage(true).catch(
-          async (error: unknown) => {
-            await this.completeMessage(participationArgs);
+        const savedMessage = await persistMessage(scope);
+        const delivery = isDefined(effectiveParticipation)
+          ? await this.deliverParticipants({
+              ...args,
+              ...effectiveParticipation,
+              peerWorkspaceMemberId,
+              messageId: savedMessage.id,
+              isInitialMessage: appliedParticipation?.isInitialMessage ?? false,
+              scope,
+            })
+          : {
+              mentionedParticipantWorkspaceMemberIds: [],
+              recipientParticipantWorkspaceMemberIds: [],
+            };
 
-            throw error;
-          },
-        );
-
-        const recipientParticipantWorkspaceMemberIds =
-          await this.completeMessage({
-            ...participationArgs,
-            isAssistantParticipationApplied: true,
-          });
-
-        return { ...sentMessage, recipientParticipantWorkspaceMemberIds };
+        return { ...savedMessage, ...delivery };
       },
     });
   }
 
-  // The message may already be saved, so a participation failure must not fail the send
-  async completeMessage(
-    args: AgentChatMessageParticipationArgs & {
-      isAssistantParticipationApplied?: boolean;
-    },
-  ): Promise<string[]> {
+  private async deliverParticipants({
+    scope,
+    isInitialMessage,
+    messageId,
+    recipientWorkspaceMemberIds = [],
+    mentionedWorkspaceMemberIds = [],
+    peerWorkspaceMemberId,
+    ...args
+  }: AgentChatThreadAccessArgs &
+    AgentChatAssistantParticipationArgs & {
+      scope: AgentHistoryTransactionScope;
+      isInitialMessage: boolean;
+      messageId: string;
+      peerWorkspaceMemberId?: string;
+    }): Promise<AgentChatMessageParticipationResult> {
+    if (isDefined(peerWorkspaceMemberId)) {
+      if (isInitialMessage) {
+        const lastActivityAt = new Date().toISOString();
+
+        await scope.update(
+          'agentChatThread',
+          { id: args.threadId },
+          {
+            lastActivityAt,
+            lastMessageSenderWorkspaceMemberId: args.workspaceMemberId,
+            writerWorkspaceMemberIds: [
+              args.workspaceMemberId,
+              peerWorkspaceMemberId,
+            ],
+          },
+        );
+        await this.participantService.moveMembersToInbox({
+          ...args,
+          participantWorkspaceMemberIds: [
+            args.workspaceMemberId,
+            peerWorkspaceMemberId,
+          ],
+          isMention: false,
+          shouldIncludeSender: true,
+          senderLastReadAt: lastActivityAt,
+          transactionScope: scope,
+        });
+        scope.afterCommit(() =>
+          this.threadRecordEventService.emitThreadCreated({
+            workspaceId: args.workspaceId,
+            threadId: args.threadId,
+          }),
+        );
+      }
+
+      const mentionedParticipantWorkspaceMemberIds =
+        await this.threadService.addMentionedParticipants({
+          ...args,
+          mentionedWorkspaceMemberIds,
+          transactionScope: scope,
+        });
+
+      return {
+        mentionedParticipantWorkspaceMemberIds,
+        recipientParticipantWorkspaceMemberIds: isInitialMessage
+          ? [peerWorkspaceMemberId]
+          : [],
+      };
+    }
+
+    const mentionedParticipantWorkspaceMemberIds = await this.deliverToInbox({
+      ...args,
+      scope,
+      messageId,
+      deliver: (transactionScope) =>
+        this.threadService.addMentionedParticipants({
+          ...args,
+          mentionedWorkspaceMemberIds,
+          transactionScope,
+        }),
+    });
+    const recipientParticipantWorkspaceMemberIds = isInitialMessage
+      ? await this.deliverToInbox({
+          ...args,
+          scope,
+          messageId,
+          deliver: (transactionScope) =>
+            this.threadService.deliverToParticipants({
+              ...args,
+              participantWorkspaceMemberIds: recipientWorkspaceMemberIds,
+              transactionScope,
+            }),
+        })
+      : [];
+
+    return {
+      mentionedParticipantWorkspaceMemberIds,
+      recipientParticipantWorkspaceMemberIds,
+    };
+  }
+
+  private async deliverToInbox({
+    scope,
+    deliver,
+    messageId,
+    ...args
+  }: AgentChatThreadAccessArgs & {
+    scope: WorkspaceTransactionScope;
+    messageId: string;
+    deliver: (transactionScope: WorkspaceTransactionScope) => Promise<string[]>;
+  }): Promise<string[]> {
+    const afterCommitCallbacks: (() => void | Promise<void>)[] = [];
+    const deliveryScope: WorkspaceTransactionScope = {
+      ...scope,
+      afterCommit: (callback) => afterCommitCallbacks.push(callback),
+    };
+
+    await scope.executeRawQuery('SAVEPOINT agent_chat_participant_delivery');
+
     try {
-      return await this.applyMessageParticipation(args);
+      const participantWorkspaceMemberIds = await deliver(deliveryScope);
+
+      await scope.executeRawQuery(
+        'RELEASE SAVEPOINT agent_chat_participant_delivery',
+      );
+
+      for (const callback of afterCommitCallbacks) {
+        scope.afterCommit(callback);
+      }
+
+      return participantWorkspaceMemberIds;
     } catch (error) {
+      await scope.executeRawQuery(
+        'ROLLBACK TO SAVEPOINT agent_chat_participant_delivery',
+      );
+      await scope.executeRawQuery(
+        'RELEASE SAVEPOINT agent_chat_participant_delivery',
+      );
       this.logger.warn(
         doNotTranslate(
-          `Could not apply participation for chat message ${args.messageId} in thread ${args.threadId} of workspace ${args.workspaceId}: ${formatErrorWithCause(error)}`,
+          `Could not apply participation for chat message ${messageId} in thread ${args.threadId} of workspace ${args.workspaceId}: ${formatErrorWithCause(error)}`,
         ),
       );
 
       return [];
     }
-  }
-
-  private async applyMessageParticipation({
-    messageId,
-    isAssistantMentioned,
-    recipientWorkspaceMemberIds,
-    mentionedWorkspaceMemberIds,
-    isAssistantParticipationApplied = false,
-    ...args
-  }: AgentChatMessageParticipationArgs & {
-    isAssistantParticipationApplied?: boolean;
-  }): Promise<string[]> {
-    const isMessageSaved = await this.chatService.hasMessage({
-      workspaceId: args.workspaceId,
-      threadId: args.threadId,
-      messageId,
-      workspaceMemberId: args.workspaceMemberId,
-    });
-
-    if (!isMessageSaved) {
-      return [];
-    }
-
-    const isInitialMessage = await this.threadService.isInitialMessage({
-      ...args,
-      messageId,
-    });
-
-    if (isAssistantMentioned && !isAssistantParticipationApplied) {
-      await this.threadService.addAssistantParticipant({
-        ...args,
-        messageId,
-        recipientWorkspaceMemberIds,
-        mentionedWorkspaceMemberIds,
-      });
-    }
-
-    if (!isInitialMessage) {
-      return [];
-    }
-
-    return this.threadService.deliverToParticipants({
-      ...args,
-      participantWorkspaceMemberIds: recipientWorkspaceMemberIds,
-    });
   }
 }

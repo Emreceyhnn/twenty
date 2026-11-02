@@ -1,7 +1,9 @@
 import { useStore } from 'jotai';
 import { useCallback } from 'react';
 import { AppPath } from 'twenty-shared/types';
-import { getAppPath } from 'twenty-shared/utils';
+import { getAppPath, isDefined } from 'twenty-shared/utils';
+import { isObject } from '@sniptt/guards';
+import { agentChatDirectMessageDraftsState } from '@/ai/states/agentChatDirectMessageDraftsState';
 
 import { AI_CHAT_NEW_THREAD_PATH_SEGMENT } from '@/ai/constants/AiChatNewThreadPathSegment';
 import { newAiChatThreadIdState } from '@/ai/states/newAiChatThreadIdState';
@@ -38,10 +40,20 @@ export const useProjectAiChatThreadToUrl = ({
         return;
       }
 
-      const isNewChat = threadId === store.get(newAiChatThreadIdState.atom);
-      const newThreadPathSegment = isOnInboxPage
-        ? AI_CHAT_NEW_THREAD_PATH_SEGMENT
-        : null;
+      const directMessageDraft = store.get(
+        agentChatDirectMessageDraftsState.atom,
+      )[threadId];
+      const isDirectMessageDraft =
+        isDefined(directMessageDraft) &&
+        !isDefined(directMessageDraft.canonicalThreadId);
+      const isNewChat =
+        threadId === store.get(newAiChatThreadIdState.atom) ||
+        isDirectMessageDraft;
+      const newThreadPathSegment =
+        isOnInboxPage || isDirectMessageDraft
+          ? AI_CHAT_NEW_THREAD_PATH_SEGMENT
+          : null;
+      const historyState = getCurrentHistoryEntryState();
 
       navigateApp(
         isOnInboxPage ? AppPath.AiChatInbox : AppPath.AiChat,
@@ -49,7 +61,15 @@ export const useProjectAiChatThreadToUrl = ({
           threadId: isNewChat ? newThreadPathSegment : threadId,
         },
         undefined,
-        { replace: !isInboxClosed, state: getCurrentHistoryEntryState() },
+        {
+          replace: !isInboxClosed,
+          state: {
+            ...(isObject(historyState) ? historyState : {}),
+            directMessageDraftThreadId: isDirectMessageDraft
+              ? threadId
+              : undefined,
+          },
+        },
       );
     },
     [navigateApp, shouldPreserveClosedInbox, store],

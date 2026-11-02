@@ -8513,6 +8513,9 @@ export default {
                     "channelId": [
                         534
                     ],
+                    "directMessageWorkspaceMemberId": [
+                        534
+                    ],
                     "fileAttachments": [
                         279,
                         "[FileAttachmentInput!]"
@@ -8535,7 +8538,7 @@ export default {
                         1
                     ],
                     "recipientWorkspaceMemberIds": [
-                        533,
+                        534,
                         "[UUID!]"
                     ],
                     "shouldAssistantReply": [
@@ -10953,6 +10956,15 @@ export default {
             "currentWorkspace": [
                 670
             ],
+            "directMessageThread": [
+                17,
+                {
+                    "peerWorkspaceMemberId": [
+                        534,
+                        "UUID!"
+                    ]
+                }
+            ],
             "enterpriseCheckoutSession": [
                 1,
                 {
@@ -12535,10 +12547,13 @@ export default {
                 4
             ],
             "recipientParticipantWorkspaceMemberIds": [
-                533
+                534
             ],
             "streamId": [
                 1
+            ],
+            "threadId": [
+                534
             ],
             "__typename": [
                 1

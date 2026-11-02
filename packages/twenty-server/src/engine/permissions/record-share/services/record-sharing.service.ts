@@ -1,6 +1,7 @@
 import { buildRecordShareLockKey } from 'src/engine/permissions/record-share/utils/build-record-share-lock-key.util';
 import { computeObjectTargetTable } from 'src/engine/utils/compute-object-target-table.util';
 import { Injectable } from '@nestjs/common';
+import { In } from 'typeorm';
 
 import {
   RecordShareAccessLevel,
@@ -20,6 +21,9 @@ import {
 import { RecordSharePrincipalService } from 'src/engine/permissions/record-share/services/record-share-principal.service';
 import { type PrivateRecordState } from 'src/engine/permissions/private-record/types/private-record-state.type';
 import { PrivateRecordStorageService } from 'src/engine/permissions/private-record/services/private-record-storage.service';
+import { type RowAccessRecord } from 'src/engine/permissions/combine/types/row-access-policy.type';
+import { findDirectMessageThreadsForRecords } from 'src/engine/permissions/private-record/utils/find-direct-message-threads-for-records.util';
+import { getDirectMessageThreadRelationPath } from 'src/engine/permissions/private-record/utils/get-direct-message-thread-relation-path.util';
 import { RecordShareStorageService } from 'src/engine/permissions/record-share/services/record-share-storage.service';
 import { type RecordShare } from 'src/engine/permissions/record-share/types/record-share.type';
 import { canRolesAccessAllRecords } from 'src/engine/permissions/role/utils/can-roles-access-all-records.util';
@@ -38,10 +42,18 @@ import { DENIED_RECORD_PERMISSIONS } from 'src/engine/permissions/record-permiss
 import { type RecordPermissionsDTO } from 'src/engine/permissions/record-permissions/dtos/record-permissions.dto';
 import { type RecordTargetInput } from 'src/engine/permissions/record-permissions/dtos/record-target.input';
 import { RecordPermissionsService } from 'src/engine/permissions/record-permissions/services/record-permissions.service';
+import {
+  PermissionsException,
+  PermissionsExceptionCode,
+} from 'src/engine/permissions/permissions.exception';
+import { validateOperationIsPermittedOrThrow } from 'src/engine/permissions/role/utils/validate-operation-is-permitted-or-throw.util';
 import { type WorkspaceTransactionScope } from 'src/engine/twenty-orm/types/workspace-transaction-scope.type';
 import { getRoleIdsFromRolePermissionConfig } from 'src/engine/permissions/principal/utils/get-role-ids-from-role-permission-config.util';
+import { buildPermissionsPrincipalsWithRolesFromConfig } from 'src/engine/permissions/principal/utils/build-permissions-principals-with-roles-from-config.util';
+import { getPermissionsPrincipalsFromAuthContext } from 'src/engine/permissions/principal/utils/get-permissions-principals-from-auth-context.util';
 import { resolvePrincipalIdsFromAuthContext } from 'src/engine/permissions/principal/utils/resolve-principal-ids-from-auth-context.util';
 import { resolveRolePermissionConfig } from 'src/engine/permissions/principal/utils/resolve-role-permission-config.util';
+import { getWorkspaceContext } from 'src/engine/twenty-orm/storage/orm-workspace-context.storage';
 import { WorkspaceOrmManager } from 'src/engine/twenty-orm/workspace-orm.manager';
 import { WorkspaceCacheService } from 'src/engine/workspace-cache/services/workspace-cache.service';
 import { getWorkspaceSchemaName } from 'src/engine/workspace-datasource/utils/get-workspace-schema-name.util';
@@ -49,6 +61,7 @@ import { escapeIdentifier } from 'src/engine/workspace-manager/workspace-migrati
 
 type RecordSharingArgs = RecordTargetInput & {
   authContext: UserWorkspaceAuthContext;
+  transactionScope?: WorkspaceTransactionScope;
 };
 
 type RecordSharingObject = ObjectSharing & {
@@ -61,6 +74,8 @@ type RecordSharingChange = {
   sharingObject: RecordSharingObject;
   creatorWorkspaceMemberId: string | undefined;
 };
+
+const RECORD_SHARING_SAVEPOINT_NAME = 'record_sharing_write';
 
 @Injectable()
 export class RecordSharingService {
@@ -87,9 +102,10 @@ export class RecordSharingService {
   async setPrivate(
     args: RecordSharingArgs & { isPrivate: boolean },
   ): Promise<RecordSharingDTO> {
-    return this.changeSharing(args, (change) =>
-      this.writeRecordPrivacy({ ...change, args }),
-    );
+    return this.changeSharing({
+      args,
+      write: (change) => this.writeRecordPrivacy({ ...change, args }),
+    });
   }
 
   async setShare(
@@ -107,9 +123,9 @@ export class RecordSharingService {
       ...maps,
     });
 
-    return this.changeSharing(
+    return this.changeSharing({
       args,
-      async ({ workspaceId, transactionScope, sharingObject }) => {
+      write: async ({ workspaceId, transactionScope, sharingObject }) => {
         await this.recordShareStorageService.setManualShare({
           workspaceId,
           transactionScope,
@@ -132,7 +148,7 @@ export class RecordSharingService {
           },
         );
       },
-    );
+    });
   }
 
   async removeShare(
@@ -140,26 +156,31 @@ export class RecordSharingService {
   ): Promise<RecordSharingDTO> {
     const principal = resolveRecordSharePrincipalOrThrow(args.principal);
 
-    return this.changeSharing(args, ({ workspaceId, transactionScope }) =>
-      this.recordShareStorageService.setManualShare({
-        workspaceId,
-        transactionScope,
-        enabled: false,
-        share: {
-          ...principal,
-          accessLevel: RecordShareAccessLevel.READ,
-          objectMetadataId: args.objectMetadataId,
-          recordId: args.recordId,
-          sourceId: args.recordId,
-        },
-      }),
-    );
+    return this.changeSharing({
+      args,
+      write: ({ workspaceId, transactionScope }) =>
+        this.recordShareStorageService.setManualShare({
+          workspaceId,
+          transactionScope,
+          enabled: false,
+          share: {
+            ...principal,
+            accessLevel: RecordShareAccessLevel.READ,
+            objectMetadataId: args.objectMetadataId,
+            recordId: args.recordId,
+            sourceId: args.recordId,
+          },
+        }),
+    });
   }
 
-  private async changeSharing(
-    args: RecordSharingArgs,
-    write: (change: RecordSharingChange) => Promise<void>,
-  ): Promise<RecordSharingDTO> {
+  private async changeSharing({
+    args,
+    write,
+  }: {
+    args: RecordSharingArgs;
+    write: (change: RecordSharingChange) => Promise<void>;
+  }): Promise<RecordSharingDTO> {
     const sharingObject = await this.getSharingObject(args);
     const { flatObjectMetadata } = sharingObject;
     const workspaceId = args.authContext.workspace.id;
@@ -168,63 +189,103 @@ export class RecordSharingService {
       throw new NotFoundError('Record not found');
     }
 
-    await this.workspaceOrmManager.executeInWorkspaceContext(
-      () =>
-        this.workspaceOrmManager.runInWorkspaceTransaction(
-          async (transactionScope) => {
-            await transactionScope.executeRawQuery(
-              'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
-              [
-                buildRecordShareLockKey({
-                  workspaceId,
-                  objectMetadataId: args.objectMetadataId,
-                  recordId: args.recordId,
-                }),
-              ],
-            );
-            // Lock the target as well as its grants, so deletion cannot leave an orphan grant.
-            await transactionScope.executeRawQuery(
-              `SELECT id FROM ${escapeIdentifier(getWorkspaceSchemaName(workspaceId))}.${escapeIdentifier(computeObjectTargetTable(flatObjectMetadata))} WHERE id = $1 FOR UPDATE`,
-              [args.recordId],
-            );
-            const repository =
-              this.workspaceOrmManager.getRepositoryWithContextPermissions(
-                flatObjectMetadata.nameSingular,
-                transactionScope,
-              );
-            const writableIds =
-              await repository.findRecordIdsAllowedForOperation({
-                recordIds: [args.recordId],
-                operationType: 'update',
-                withDeleted: true,
-              });
-            // A grant may let someone edit a record beyond their role, never
-            // decide who else gets it
-            if (
-              writableIds.length !== 1 ||
-              !repository.isObjectOperationPermittedByRole('update')
-            ) {
-              throw new NotFoundError('Record not found');
-            }
-            const { viewerAccessLevel, creatorWorkspaceMemberId } =
-              await this.getRecordShares({
-                ...args,
-                sharingObject,
-                transactionScope,
-              });
-            if (viewerAccessLevel !== RecordShareAccessLevel.FULL) {
-              throw new NotFoundError('Record not found');
-            }
-            await write({
-              workspaceId,
-              transactionScope,
+    const writeInTransaction = async (
+      transactionScope: WorkspaceTransactionScope,
+    ) => {
+      await transactionScope.executeRawQuery(
+        'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+        [
+          buildRecordShareLockKey({
+            workspaceId,
+            objectMetadataId: args.objectMetadataId,
+            recordId: args.recordId,
+          }),
+        ],
+      );
+      await transactionScope.executeRawQuery(
+        `SELECT id FROM ${escapeIdentifier(getWorkspaceSchemaName(workspaceId))}.${escapeIdentifier(computeObjectTargetTable(flatObjectMetadata))} WHERE id = $1 FOR UPDATE`,
+        [args.recordId],
+      );
+      const repository =
+        this.workspaceOrmManager.getRepositoryWithContextPermissions(
+          flatObjectMetadata.nameSingular,
+          transactionScope,
+        );
+      const canUpdateRecord = isDefined(args.transactionScope)
+        ? (
+            await this.getPermissions({
+              args,
               sharingObject,
-              creatorWorkspaceMemberId,
-            });
-          },
-        ),
-      args.authContext,
-    );
+            })
+          ).canUpdate
+        : (
+            await repository.findRecordIdsAllowedForOperation({
+              recordIds: [args.recordId],
+              operationType: 'update',
+              withDeleted: true,
+            })
+          ).length === 1;
+      if (
+        !canUpdateRecord ||
+        !repository.isObjectOperationPermittedByRole('update')
+      ) {
+        throw new NotFoundError('Record not found');
+      }
+
+      await this.assertDirectMessageSharingIsUnchanged({
+        flatObjectMetadata,
+        recordId: args.recordId,
+        transactionScope,
+      });
+      const { viewerAccessLevel, creatorWorkspaceMemberId } =
+        await this.getRecordShares({
+          ...args,
+          sharingObject,
+          transactionScope,
+        });
+      if (viewerAccessLevel !== RecordShareAccessLevel.FULL) {
+        throw new NotFoundError('Record not found');
+      }
+      await write({
+        workspaceId,
+        transactionScope,
+        sharingObject,
+        creatorWorkspaceMemberId,
+      });
+    };
+
+    await this.workspaceOrmManager.executeInWorkspaceContext(async () => {
+      const transactionScope = args.transactionScope;
+
+      if (!isDefined(transactionScope)) {
+        await this.workspaceOrmManager.runInWorkspaceTransaction(
+          writeInTransaction,
+        );
+
+        return;
+      }
+
+      await transactionScope.executeRawQuery(
+        `SAVEPOINT ${RECORD_SHARING_SAVEPOINT_NAME}`,
+      );
+
+      try {
+        await writeInTransaction(transactionScope);
+      } catch (error) {
+        await transactionScope.executeRawQuery(
+          `ROLLBACK TO SAVEPOINT ${RECORD_SHARING_SAVEPOINT_NAME}`,
+        );
+        await transactionScope.executeRawQuery(
+          `RELEASE SAVEPOINT ${RECORD_SHARING_SAVEPOINT_NAME}`,
+        );
+
+        throw error;
+      }
+
+      await transactionScope.executeRawQuery(
+        `RELEASE SAVEPOINT ${RECORD_SHARING_SAVEPOINT_NAME}`,
+      );
+    }, args.authContext);
 
     const permissions = await this.getPermissions({ args, sharingObject });
 
@@ -242,6 +303,52 @@ export class RecordSharingService {
     }
 
     return this.buildSharingResponse({ args, sharingObject, permissions });
+  }
+
+  private async assertDirectMessageSharingIsUnchanged({
+    flatObjectMetadata,
+    recordId,
+    transactionScope,
+  }: {
+    flatObjectMetadata: FlatObjectMetadata;
+    recordId: string;
+    transactionScope: WorkspaceTransactionScope;
+  }): Promise<void> {
+    if (!isDefined(getDirectMessageThreadRelationPath(flatObjectMetadata))) {
+      return;
+    }
+
+    const record = await transactionScope
+      .getRepository<RowAccessRecord>(flatObjectMetadata.nameSingular, {
+        shouldBypassPermissionChecks: true,
+      })
+      .findOne({ where: { id: recordId }, withDeleted: true });
+
+    if (!isDefined(record)) {
+      throw new NotFoundError('Record not found');
+    }
+
+    const threadsByRecordId = await findDirectMessageThreadsForRecords({
+      flatObjectMetadata,
+      records: [record],
+      findRelatedRecords: async ({ objectNameSingular, recordIds }) => {
+        if (recordIds.length === 0) {
+          return [];
+        }
+
+        return transactionScope
+          .getRepository<RowAccessRecord>(objectNameSingular, {
+            shouldBypassPermissionChecks: true,
+          })
+          .find({ where: { id: In(recordIds) }, withDeleted: true });
+      },
+    });
+
+    if (
+      threadsByRecordId.get(recordId)?.conversationType === 'DIRECT_MESSAGE'
+    ) {
+      throw new NotFoundError('Record not found');
+    }
   }
 
   private async writeRecordPrivacy({
@@ -554,6 +661,16 @@ export class RecordSharingService {
     args: RecordSharingArgs;
     sharingObject: RecordSharingObject;
   }): Promise<RecordPermissionsDTO> {
+    const transactionScope = args.transactionScope;
+
+    if (isDefined(transactionScope)) {
+      return this.getPermissionsInTransaction({
+        ...args,
+        sharingObject,
+        transactionScope,
+      });
+    }
+
     const permissionsByRecordId =
       await this.recordPermissionsService.getPermissionsForRecords({
         authContext: args.authContext,
@@ -564,6 +681,94 @@ export class RecordSharingService {
     return (
       permissionsByRecordId.get(args.recordId) ?? DENIED_RECORD_PERMISSIONS
     );
+  }
+
+  private async getPermissionsInTransaction({
+    authContext,
+    recordId,
+    sharingObject,
+    transactionScope,
+  }: RecordSharingArgs & {
+    sharingObject: RecordSharingObject;
+    transactionScope: WorkspaceTransactionScope;
+  }): Promise<RecordPermissionsDTO> {
+    return this.workspaceOrmManager.executeInWorkspaceContext(async () => {
+      const context = getWorkspaceContext();
+      const rolePermissionConfig = resolveRolePermissionConfig(context);
+
+      if (!isDefined(rolePermissionConfig)) {
+        return DENIED_RECORD_PERMISSIONS;
+      }
+
+      const principal = buildPermissionsPrincipalsWithRolesFromConfig({
+        workspaceId: transactionScope.workspaceId,
+        rolePermissionConfig,
+        principalsContext: getPermissionsPrincipalsFromAuthContext(authContext),
+      });
+
+      if (!isDefined(principal)) {
+        return DENIED_RECORD_PERMISSIONS;
+      }
+
+      const roleRepository =
+        this.workspaceOrmManager.getRepositoryWithContextPermissions(
+          sharingObject.flatObjectMetadata.nameSingular,
+          transactionScope,
+        );
+      const { internalContext } = roleRepository;
+
+      try {
+        validateOperationIsPermittedOrThrow({
+          entityName: sharingObject.flatObjectMetadata.nameSingular,
+          operationType: 'select',
+          objectsPermissions: roleRepository.objectRecordsPermissions,
+          flatObjectMetadataMaps: internalContext.flatObjectMetadataMaps,
+          flatFieldMetadataMaps: internalContext.flatFieldMetadataMaps,
+          objectIdByNameSingular: internalContext.objectIdByNameSingular,
+          selectedColumns: ['id'],
+          updatedColumns: [],
+        });
+      } catch (error) {
+        if (
+          error instanceof PermissionsException &&
+          error.code === PermissionsExceptionCode.PERMISSION_DENIED
+        ) {
+          return DENIED_RECORD_PERMISSIONS;
+        }
+
+        throw error;
+      }
+
+      const repository = transactionScope.getRepository(
+        sharingObject.flatObjectMetadata.nameSingular,
+        { shouldBypassPermissionChecks: true },
+        { shouldSkipEventEmission: true },
+      );
+      const operationTypes = [
+        'select',
+        'update',
+        'delete',
+        'soft-delete',
+      ] as const;
+      const [readableIds, updatableIds, deletableIds, softDeletableIds] =
+        await Promise.all(
+          operationTypes.map((operationType) =>
+            repository.findPrincipalAdmittedRecordIds({
+              principal,
+              recordIds: [recordId],
+              operationType,
+            }),
+          ),
+        );
+      const canRead = readableIds.has(recordId);
+
+      return {
+        canRead,
+        canUpdate: canRead && updatableIds.has(recordId),
+        canDelete: canRead && deletableIds.has(recordId),
+        canSoftDelete: canRead && softDeletableIds.has(recordId),
+      };
+    }, authContext);
   }
 
   private isUpdatePermittedByRole({

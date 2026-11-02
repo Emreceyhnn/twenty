@@ -3,6 +3,7 @@ import { isDefined } from 'twenty-shared/utils';
 import { Avatar, type AvatarSize } from 'twenty-ui/primitives/data-display';
 
 import { useAgentChatThreadMembers } from '@/ai/hooks/useAgentChatThreadMembers';
+import { useAiChatDirectMessage } from '@/ai/hooks/useAiChatDirectMessage';
 import { type AgentChatThreadRecord } from '@/ai/types/AgentChatThreadRecord';
 import { getWorkspaceMemberNameOrEmail } from '@/workspace-member/utils/getWorkspaceMemberNameOrEmail';
 import { getAbsoluteImageUrl } from '~/utils/image/getAbsoluteImageUrl';
@@ -19,6 +20,19 @@ export const AiChatThreadAvatar = ({
 }: AiChatThreadAvatarProps) => {
   const { t } = useLingui();
   const threadMembers = useAgentChatThreadMembers(thread);
+  const { peer } = useAiChatDirectMessage(thread.id);
+
+  if (isDefined(peer)) {
+    return (
+      <Avatar
+        name={peer.name}
+        src={peer.avatarUrl}
+        colorSeed={peer.workspaceMemberId}
+        size={size}
+        shape="circle"
+      />
+    );
+  }
 
   const [onlyMember, secondMember] = threadMembers;
 

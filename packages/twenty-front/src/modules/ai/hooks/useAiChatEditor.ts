@@ -9,6 +9,7 @@ import { AI_CHAT_EDITOR_PROFILE } from '@/ai/constants/AiChatEditorProfile';
 import { AGENT_CHAT_RESTORE_EDITOR_CONTENT_EVENT_NAME } from '@/ai/constants/AgentChatRestoreEditorContentEventName';
 import { AI_CHAT_INPUT_ID } from '@/ai/constants/AiChatInputId';
 import { useAiChatFileUpload } from '@/ai/hooks/useAiChatFileUpload';
+import { useAiChatDirectMessage } from '@/ai/hooks/useAiChatDirectMessage';
 import { agentChatDraftsByThreadIdState } from '@/ai/states/agentChatDraftsByThreadIdState';
 import { currentAiChatThreadState } from '@/ai/states/currentAiChatThreadState';
 import { newAiChatThreadIdState } from '@/ai/states/newAiChatThreadIdState';
@@ -39,6 +40,7 @@ export const useAiChatEditor = () => {
     useAtomState(agentChatDraftsByThreadIdState);
   const { searchMentionRecords } = useMentionSearch();
   const { searchWorkspaceMembers } = useWorkspaceMemberMentionSearch();
+  const { peerWorkspaceMemberId } = useAiChatDirectMessage();
   const isAiChatInboxEnabled = useIsFeatureEnabled(
     FeatureFlagKey.IS_AI_CHAT_INBOX_ENABLED,
   );
@@ -143,7 +145,11 @@ export const useAiChatEditor = () => {
                 objectLabelPlural: t`Teammates`,
               })
             : []),
-          ...searchWorkspaceMembers(query),
+          ...searchWorkspaceMembers(query).filter(
+            ({ recordId }) =>
+              !isDefined(peerWorkspaceMemberId) ||
+              recordId === peerWorkspaceMemberId,
+          ),
         ]
       : () => [];
 

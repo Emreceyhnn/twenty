@@ -11,6 +11,7 @@ type NavigationDrawerDirectMessagesSectionProps = {
   currentThreadId: string | null;
   onSelect: (threadId: string) => void;
   memberPicker: ReactNode;
+  footer?: ReactNode;
 };
 
 export const NavigationDrawerDirectMessagesSection = ({
@@ -18,6 +19,7 @@ export const NavigationDrawerDirectMessagesSection = ({
   currentThreadId,
   onSelect,
   memberPicker,
+  footer,
 }: NavigationDrawerDirectMessagesSectionProps) => {
   const { t } = useLingui();
 
@@ -39,6 +41,7 @@ export const NavigationDrawerDirectMessagesSection = ({
           onSelect={onSelect}
         />
       ))}
+      {footer}
     </CollapsibleNavigationDrawerSection>
   );
 };

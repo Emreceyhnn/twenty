@@ -122,6 +122,14 @@ export const useRefreshAgentChatThreads = () => {
   // A chat opened by URL may be past the loaded pages; null if not listed for this member, undefined if unknown.
   const loadAgentChatThread = useCallback(
     async (threadId: string) => {
+      const workspaceId = store.get(currentWorkspaceState.atom)?.id;
+      const workspaceMemberId = store.get(currentWorkspaceMemberState.atom)?.id;
+      const userWorkspace = store.get(currentUserWorkspaceState.atom);
+      const isSameSession = () =>
+        store.get(currentWorkspaceState.atom)?.id === workspaceId &&
+        store.get(currentWorkspaceMemberState.atom)?.id === workspaceMemberId &&
+        store.get(currentUserWorkspaceState.atom) === userWorkspace;
+
       for (let attempt = 0; attempt < 2; attempt++) {
         const updateCountBeforeRequest = store.get(
           agentChatThreadRecordUpdateCountState.atom,
@@ -131,7 +139,7 @@ export const useRefreshAgentChatThreads = () => {
           threadIdFilter: { id: { eq: threadId } },
         });
 
-        if (!isDefined(page)) {
+        if (!isDefined(page) || !isSameSession()) {
           return undefined;
         }
 
@@ -142,6 +150,10 @@ export const useRefreshAgentChatThreads = () => {
         }
 
         await refreshAgentChatThreadPermissions([thread.id]);
+
+        if (!isSameSession()) {
+          return undefined;
+        }
 
         if (
           store.get(agentChatThreadRecordUpdateCountState.atom) !==
