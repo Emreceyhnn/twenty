@@ -280,8 +280,8 @@ import { IndexTemporaryFileExpirationSlowInstanceCommand } from 'src/database/co
 import { EnableUserHealthCheckFastInstanceCommand } from 'src/database/commands/upgrade-version-command/2-55/2-55-instance-command-fast-1793473469981-enable-user-health-check';
 import { AddSettingsMenuItemSlugFastInstanceCommand } from 'src/database/commands/upgrade-version-command/2-55/2-55-instance-command-fast-1793618487873-add-settings-menu-item-slug';
 import { AddApplicationRoleTargetFastInstanceCommand } from 'src/database/commands/upgrade-version-command/2-55/2-55-instance-command-fast-1793627583457-add-application-role-target';
-import { AddRetainedApplicationToAgentChatChannelFastInstanceCommand } from 'src/database/commands/upgrade-version-command/2-55/2-55-instance-command-fast-1793637547364-add-retained-application-to-agent-chat-channel';
-import { AddRetainedApplicationIdToAgentChatChannelFastInstanceCommand } from 'src/database/commands/upgrade-version-command/2-55/2-55-instance-command-fast-1793638177640-add-retained-application-id-to-agent-chat-channel';
+import { AddRetainedApplicationToAgentChatChannelFastInstanceCommand } from 'src/database/commands/upgrade-version-command/2-56/2-56-instance-command-fast-1793702373189-add-retained-application-to-agent-chat-channel';
+import { AddRetainedApplicationIdToAgentChatChannelFastInstanceCommand } from 'src/database/commands/upgrade-version-command/2-56/2-56-instance-command-fast-1793702373190-add-retained-application-id-to-agent-chat-channel';
 
 export const INSTANCE_COMMANDS = [
   AddViewFieldGroupIdIndexOnViewFieldFastInstanceCommand,

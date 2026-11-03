@@ -1,2 +1,0 @@
-export const ADD_RETAINED_APPLICATION_TO_AGENT_CHAT_CHANNEL_UPGRADE_COMMAND_NAME =
-  '2.55.0_AddRetainedApplicationToAgentChatChannelFastInstanceCommand_1793637547364';
