@@ -29,6 +29,7 @@ import { AgentChatChannelEntity } from 'src/engine/metadata-modules/agent-chat-c
 import { type AgentChatChannelMetadataService } from 'src/engine/metadata-modules/agent-chat-channel/services/agent-chat-channel-metadata.service';
 import { AiExceptionCode } from 'src/engine/metadata-modules/ai/ai.exception';
 import { getWorkspaceSchemaName } from 'src/engine/workspace-datasource/utils/get-workspace-schema-name.util';
+import { type WorkspaceMigrationValidateBuildAndRunService } from 'src/engine/workspace-manager/workspace-migration/services/workspace-migration-validate-build-and-run-service';
 import { SEED_APPLE_WORKSPACE_ID } from 'src/engine/workspace-manager/dev-seeder/core/constants/seeder-workspaces.constant';
 import { STANDARD_AGENT_CHAT_CHANNEL } from 'src/engine/workspace-manager/twenty-standard-application/constants/standard-agent-chat-channel.constant';
 import { WORKSPACE_MEMBER_DATA_SEED_IDS } from 'src/engine/workspace-manager/dev-seeder/data/constants/workspace-member-data-seeds.constant';
@@ -820,15 +821,15 @@ describe('Uninstalling an application that created inbox channels', () => {
   const createdThreadIds: string[] = [];
   const createdChannelIds: string[] = [];
   let uninstalledApplication: ApplicationUnderTest;
-  let rolledBackApplication: ApplicationUnderTest;
+  let unrelatedApplication: ApplicationUnderTest;
 
   beforeAll(async () => {
     uninstalledApplication = await setupApplicationUnderTestOrThrow({
       name: 'Uninstalled Channel Application',
       permissionFlagUniversalIdentifiers: CHANNEL_MANAGER_PERMISSION_FLAGS,
     });
-    rolledBackApplication = await setupApplicationUnderTestOrThrow({
-      name: 'Rolled Back Channel Application',
+    unrelatedApplication = await setupApplicationUnderTestOrThrow({
+      name: 'Unrelated Channel Application',
       permissionFlagUniversalIdentifiers: CHANNEL_MANAGER_PERMISSION_FLAGS,
     });
   }, 180_000);
@@ -847,7 +848,7 @@ describe('Uninstalling an application that created inbox channels', () => {
 
     for (const { application } of [
       uninstalledApplication,
-      rolledBackApplication,
+      unrelatedApplication,
     ].filter(isDefined)) {
       await cleanupApplicationAndAppRegistration({
         applicationUniversalIdentifier: application.universalIdentifier,
@@ -873,7 +874,7 @@ describe('Uninstalling an application that created inbox channels', () => {
     return threadId;
   };
 
-  it('keeps its channels and chats through uninstall, reinstall and failed reinstall rollback', async () => {
+  it('preserves channels and access through failed uninstall, reinstall and rollback', async () => {
     const workspaceCustomApplicationId =
       await findWorkspaceCustomApplicationIdOrThrow();
     const { id: memberRoleId } = await findOneRoleByLabel({ label: 'Member' });
@@ -889,13 +890,49 @@ describe('Uninstalling an application that created inbox channels', () => {
     });
     const threadId = await createThreadInChannel(channelId);
 
-    expect(await readChannelGrantRoleIds(threadId)).toContain(
-      uninstalledApplication.roleId,
-    );
+    const originalGrantRoleIds = await readChannelGrantRoleIds(threadId);
+    const originalChannelRoles = await readChannelRoleApplicationIds(channelId);
+    const applicationSyncService =
+      getAppProviderByClassName<ApplicationSyncService>(
+        'ApplicationSyncService',
+      );
+    const migrationService =
+      getAppProviderByClassName<WorkspaceMigrationValidateBuildAndRunService>(
+        'WorkspaceMigrationValidateBuildAndRunService',
+      );
+    const migrationError = new Error('Uninstall migration failed');
+    const failingMigration = jest
+      .spyOn(
+        migrationService,
+        'validateBuildAndRunWorkspaceMigrationFromRecord',
+      )
+      .mockRejectedValueOnce(migrationError);
 
-    await getAppProviderByClassName<ApplicationSyncService>(
-      'ApplicationSyncService',
-    ).uninstallApplication({
+    try {
+      await expect(
+        applicationSyncService.uninstallApplication({
+          workspaceId: SEED_APPLE_WORKSPACE_ID,
+          applicationUniversalIdentifier:
+            uninstalledApplication.application.universalIdentifier,
+          shouldRunUninstallHook: false,
+        }),
+      ).rejects.toBe(migrationError);
+    } finally {
+      failingMigration.mockRestore();
+    }
+
+    expect(await readChannelApplicationId(channelId)).toBe(
+      uninstalledApplication.application.id,
+    );
+    expect(await readChannelRoleApplicationIds(channelId)).toEqual(
+      originalChannelRoles,
+    );
+    expect(await readChannelGrantRoleIds(threadId)).toEqual(
+      originalGrantRoleIds,
+    );
+    expect(originalGrantRoleIds).toContain(uninstalledApplication.roleId);
+
+    await applicationSyncService.uninstallApplication({
       workspaceId: SEED_APPLE_WORKSPACE_ID,
       applicationUniversalIdentifier:
         uninstalledApplication.application.universalIdentifier,
@@ -964,7 +1001,7 @@ describe('Uninstalling an application that created inbox channels', () => {
           input: { name: buildChannelName(), universalIdentifier },
         },
       },
-      rolledBackApplication.token,
+      unrelatedApplication.token,
     );
 
     expect(otherApplicationResponse.body.errors[0].extensions).toMatchObject({
@@ -1001,13 +1038,15 @@ describe('Uninstalling an application that created inbox channels', () => {
     expect(await readChannelGrantRoleIds(threadId)).toEqual(grantRoleIds);
 
     const freshChannelId = await createChannelOrThrow({
-      input: { name: buildChannelName(), universalIdentifier: randomUUID() },
+      input: { name: buildChannelName(), roleIds: [memberRoleId] },
       token: reinstalledApplication.token,
     });
+    const freshThreadId = await createThreadInChannel(freshChannelId);
+    const generalChannelId = await findGeneralChannelId();
+    const generalThreadId = await createThreadInChannel(generalChannelId);
+    const generalRoleIds = await readChannelGrantRoleIds(generalThreadId);
 
-    await getAppProviderByClassName<ApplicationSyncService>(
-      'ApplicationSyncService',
-    ).uninstallApplication({
+    await applicationSyncService.uninstallApplication({
       workspaceId: SEED_APPLE_WORKSPACE_ID,
       applicationUniversalIdentifier:
         uninstalledApplication.application.universalIdentifier,
@@ -1019,40 +1058,16 @@ describe('Uninstalling an application that created inbox channels', () => {
       workspaceCustomApplicationId,
     );
     expect(await readChannelApplicationId(freshChannelId)).toBeUndefined();
+    expect(await readThreadChannelState(freshThreadId)).toMatchObject({
+      channelId: generalChannelId,
+    });
+    expect(await readChannelGrants(freshThreadId)).toEqual([
+      { principalType: 'ROLE', sourceId: generalChannelId },
+    ]);
+    expect(await readChannelGrantRoleIds(freshThreadId)).toEqual(
+      generalRoleIds,
+    );
     expect(await readThreadChannelState(threadId)).toMatchObject({ channelId });
     expect(await readChannelGrantRoleIds(threadId)).toEqual(grantRoleIds);
   }, 120_000);
-
-  it('deletes its channels when its failed install is rolled back, moving their chats to General with the access of General', async () => {
-    const generalChannelId = await findGeneralChannelId();
-    const channelId = await createChannelOrThrow({
-      input: {
-        name: buildChannelName(),
-        roleIds: [rolledBackApplication.roleId],
-      },
-      token: rolledBackApplication.token,
-    });
-    const threadId = await createThreadInChannel(channelId);
-    const generalThreadId = await createThreadInChannel(generalChannelId);
-    const generalRoleIds = await readChannelGrantRoleIds(generalThreadId);
-
-    await getAppProviderByClassName<ApplicationSyncService>(
-      'ApplicationSyncService',
-    ).uninstallApplication({
-      workspaceId: SEED_APPLE_WORKSPACE_ID,
-      applicationUniversalIdentifier:
-        rolledBackApplication.application.universalIdentifier,
-      shouldRunUninstallHook: false,
-      shouldKeepAgentChatChannels: false,
-    });
-
-    expect(await readChannelApplicationId(channelId)).toBeUndefined();
-    expect(await readThreadChannelState(threadId)).toMatchObject({
-      channelId: generalChannelId,
-    });
-    expect(await readChannelGrants(threadId)).toEqual([
-      { principalType: 'ROLE', sourceId: generalChannelId },
-    ]);
-    expect(await readChannelGrantRoleIds(threadId)).toEqual(generalRoleIds);
-  }, 60_000);
 });
