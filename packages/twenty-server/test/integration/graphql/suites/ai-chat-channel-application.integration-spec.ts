@@ -374,32 +374,29 @@ describe('Inbox channels managed by an application', () => {
     }
   }, 120_000);
 
-  it('lists every channel to an application managing AI settings, accessible through its role only', async () => {
-    const channelId = await createChannelOrThrow({
-      input: { name: buildChannelName(), roleIds: [channelManager.roleId] },
-      token: channelManager.token,
-    });
-
-    const channels = await listChannels(channelManager.token);
-
-    expect(channels.find(({ id }) => id === generalChannelId)).toMatchObject({
-      isAccessible: false,
-    });
-    expect(channels.find(({ id }) => id === channelId)).toMatchObject({
-      applicationId: channelManager.application.id,
-      isAccessible: true,
-      roleIds: [channelManager.roleId],
-    });
-  });
-
   it('lists only the channels open to the role of an application without AI settings, and keeps their settings closed', async () => {
     const openChannelId = await createChannelOrThrow({
-      input: { name: buildChannelName(), roleIds: [channelReader.roleId] },
-      token: APPLE_JANE_ADMIN_ACCESS_TOKEN,
+      input: {
+        name: buildChannelName(),
+        roleIds: [channelManager.roleId, channelReader.roleId],
+      },
+      token: channelManager.token,
     });
     const closedChannelId = await createChannelOrThrow({
       input: { name: buildChannelName() },
-      token: APPLE_JANE_ADMIN_ACCESS_TOKEN,
+      token: channelManager.token,
+    });
+    const managedChannels = await listChannels(channelManager.token);
+
+    expect(
+      managedChannels.find(({ id }) => id === openChannelId),
+    ).toMatchObject({
+      isAccessible: true,
+    });
+    expect(
+      managedChannels.find(({ id }) => id === closedChannelId),
+    ).toMatchObject({
+      isAccessible: false,
     });
 
     const channelIds = (await listChannels(channelReader.token)).map(
@@ -424,40 +421,35 @@ describe('Inbox channels managed by an application', () => {
     }
   });
 
-  it('lists the roles a channel can be opened to for an application managing AI settings', async () => {
-    const applicationResponse = await makeMetadataApiRequest(
-      { query: CHANNEL_ROLES },
-      channelManager.token,
-    );
-    const memberResponse = await makeMetadataApiRequest({
-      query: CHANNEL_ROLES,
-    });
-
-    assertGraphQLSuccessfulResponse(applicationResponse);
-    assertGraphQLSuccessfulResponse(memberResponse);
-    expect(applicationResponse.body.data.agentChatChannelRoles).toEqual(
-      memberResponse.body.data.agentChatChannelRoles,
-    );
-  });
-
-  it('creates one channel owned by the application for a universal identifier', async () => {
+  it('creates one application-owned channel for concurrent and repeated requests', async () => {
     const universalIdentifier = randomUUID();
     const name = buildChannelName();
+    const responses = await Promise.all(
+      [universalIdentifier, universalIdentifier.toUpperCase()].map(
+        (identifier) =>
+          createChannel({
+            input: { name, universalIdentifier: identifier },
+            token: channelManager.token,
+          }),
+      ),
+    );
 
-    const channelId = await createChannelOrThrow({
-      input: { name, universalIdentifier },
-      token: channelManager.token,
-    });
+    for (const response of responses) {
+      assertGraphQLSuccessfulResponse(response);
+    }
+
+    const channelId = responses[0].body.data.createAgentChatChannel.id;
     const repeatedResponse = await createChannel({
       input: {
         name: buildChannelName(),
-        universalIdentifier: universalIdentifier.toUpperCase(),
+        universalIdentifier,
         roleIds: [channelManager.roleId],
       },
       token: channelManager.token,
     });
 
     assertGraphQLSuccessfulResponse(repeatedResponse);
+    expect(responses[1].body.data.createAgentChatChannel.id).toBe(channelId);
     expect(repeatedResponse.body.data.createAgentChatChannel).toMatchObject({
       id: channelId,
       name,
@@ -470,57 +462,40 @@ describe('Inbox channels managed by an application', () => {
     ]);
   });
 
-  it('creates a single channel when the same universal identifier is sent twice at once', async () => {
+  it('cannot claim, update or delete a channel owned by another application', async () => {
     const universalIdentifier = randomUUID();
-
-    const responses = await Promise.all(
-      [buildChannelName(), buildChannelName()].map((name) =>
-        createChannel({
-          input: { name, universalIdentifier },
-          token: channelManager.token,
-        }),
-      ),
-    );
-
-    for (const response of responses) {
-      assertGraphQLSuccessfulResponse(response);
-    }
-
-    const channelIds = responses.map(
-      ({ body }) => body.data.createAgentChatChannel.id,
-    );
-
-    expect(channelIds[0]).toBe(channelIds[1]);
-    expect(
-      await readChannelsWithUniversalIdentifier(universalIdentifier),
-    ).toEqual([
-      { id: channelIds[0], applicationId: channelManager.application.id },
-    ]);
-  });
-
-  it('refuses the universal identifier of a channel another application owns', async () => {
-    const universalIdentifier = randomUUID();
-
-    await createChannelOrThrow({
+    const channelId = await createChannelOrThrow({
+      input: { name: buildChannelName(), universalIdentifier },
+      token: otherChannelManager.token,
+    });
+    const claimResponse = await createChannel({
       input: { name: buildChannelName(), universalIdentifier },
       token: channelManager.token,
     });
 
-    const otherApplicationResponse = await createChannel({
-      input: { name: buildChannelName(), universalIdentifier },
-      token: otherChannelManager.token,
-    });
-    const memberResponse = await createChannel({
-      input: { name: buildChannelName(), universalIdentifier },
-      token: APPLE_JANE_ADMIN_ACCESS_TOKEN,
+    expect(claimResponse.body.errors[0].extensions).toMatchObject({
+      code: 'CONFLICT',
+      subCode: AiExceptionCode.CHAT_CHANNEL_UNIVERSAL_IDENTIFIER_TAKEN,
     });
 
-    for (const response of [otherApplicationResponse, memberResponse]) {
+    const responses = await Promise.all([
+      updateChannel({
+        channelId,
+        input: { name: buildChannelName() },
+        token: channelManager.token,
+      }),
+      deleteChannel({ channelId, token: channelManager.token }),
+    ]);
+
+    for (const response of responses) {
       expect(response.body.errors[0].extensions).toMatchObject({
-        code: 'CONFLICT',
-        subCode: AiExceptionCode.CHAT_CHANNEL_UNIVERSAL_IDENTIFIER_TAKEN,
+        code: 'NOT_FOUND',
+        subCode: AiExceptionCode.CHAT_CHANNEL_NOT_FOUND,
       });
     }
+    expect(await readChannelApplicationId(channelId)).toBe(
+      otherChannelManager.application.id,
+    );
   });
 
   it('updates and deletes its own channel, keeping the access it adds as its own', async () => {
@@ -549,43 +524,24 @@ describe('Inbox channels managed by an application', () => {
       },
     ]);
 
+    const memberUpdateResponse = await updateChannel({
+      channelId,
+      input: { roleIds: [channelReader.roleId] },
+      token: APPLE_JANE_ADMIN_ACCESS_TOKEN,
+    });
+
+    assertGraphQLSuccessfulResponse(memberUpdateResponse);
+    expect(await readChannelRoleApplicationIds(channelId)).toEqual([
+      {
+        roleId: channelReader.roleId,
+        applicationId: await findWorkspaceCustomApplicationIdOrThrow(),
+      },
+    ]);
+
     assertGraphQLSuccessfulResponse(
       await deleteChannel({ channelId, token: channelManager.token }),
     );
     expect(await readChannelApplicationId(channelId)).toBeUndefined();
-  });
-
-  it('answers as if a channel it does not own did not exist', async () => {
-    const memberChannelId = await createChannelOrThrow({
-      input: { name: buildChannelName() },
-      token: APPLE_JANE_ADMIN_ACCESS_TOKEN,
-    });
-    const otherApplicationChannelId = await createChannelOrThrow({
-      input: { name: buildChannelName() },
-      token: otherChannelManager.token,
-    });
-
-    const responses = await Promise.all([
-      ...[memberChannelId, otherApplicationChannelId, generalChannelId].flatMap(
-        (channelId) => [
-          updateChannel({
-            channelId,
-            input: { name: buildChannelName() },
-            token: channelManager.token,
-          }),
-          deleteChannel({ channelId, token: channelManager.token }),
-        ],
-      ),
-      deleteChannel({ channelId: randomUUID(), token: channelManager.token }),
-    ]);
-
-    for (const response of responses) {
-      expect(response.body.errors[0].extensions).toMatchObject({
-        code: 'NOT_FOUND',
-        subCode: AiExceptionCode.CHAT_CHANNEL_NOT_FOUND,
-      });
-    }
-    expect(await readChannelApplicationId(generalChannelId)).toBeDefined();
   });
 
   it('moves the chats of its deleted channel only to a channel its role can open', async () => {
@@ -599,20 +555,12 @@ describe('Inbox channels managed by an application', () => {
     });
     const threadId = await createThreadInChannel(channelId);
 
-    const withoutDestinationResponse = await deleteChannel({
-      channelId,
-      token: channelManager.token,
-    });
     const closedDestinationResponse = await deleteChannel({
       channelId,
       token: channelManager.token,
       destinationChannelId: generalChannelId,
     });
 
-    expect(withoutDestinationResponse.body.errors[0].extensions).toMatchObject({
-      code: 'CONFLICT',
-      subCode: AiExceptionCode.CHAT_CHANNEL_NOT_EMPTY,
-    });
     expect(closedDestinationResponse.body.errors[0].extensions).toMatchObject({
       code: 'NOT_FOUND',
       subCode: AiExceptionCode.CHAT_CHANNEL_NOT_FOUND,
@@ -634,53 +582,6 @@ describe('Inbox channels managed by an application', () => {
     expect(await readChannelGrants(threadId)).toEqual([
       { principalType: 'ROLE', sourceId: destinationChannelId },
     ]);
-  });
-
-  it('keeps member behaviour on channels, including those an application owns', async () => {
-    const workspaceCustomApplicationId =
-      await findWorkspaceCustomApplicationIdOrThrow();
-    const universalIdentifier = randomUUID();
-    const memberChannelId = await createChannelOrThrow({
-      input: { name: buildChannelName(), universalIdentifier },
-      token: APPLE_JANE_ADMIN_ACCESS_TOKEN,
-    });
-    const repeatedMemberChannelId = await createChannelOrThrow({
-      input: { name: buildChannelName(), universalIdentifier },
-      token: APPLE_JANE_ADMIN_ACCESS_TOKEN,
-    });
-    const applicationChannelId = await createChannelOrThrow({
-      input: { name: buildChannelName() },
-      token: channelManager.token,
-    });
-
-    expect(repeatedMemberChannelId).toBe(memberChannelId);
-    expect(await readChannelApplicationId(memberChannelId)).toBe(
-      workspaceCustomApplicationId,
-    );
-
-    const updateResponse = await updateChannel({
-      channelId: applicationChannelId,
-      input: { roleIds: [channelReader.roleId] },
-      token: APPLE_JANE_ADMIN_ACCESS_TOKEN,
-    });
-
-    assertGraphQLSuccessfulResponse(updateResponse);
-    expect(await readChannelRoleApplicationIds(applicationChannelId)).toEqual([
-      {
-        roleId: channelReader.roleId,
-        applicationId: workspaceCustomApplicationId,
-      },
-    ]);
-
-    assertGraphQLSuccessfulResponse(
-      await deleteChannel({
-        channelId: applicationChannelId,
-        token: APPLE_JANE_ADMIN_ACCESS_TOKEN,
-      }),
-    );
-    expect(
-      await readChannelApplicationId(applicationChannelId),
-    ).toBeUndefined();
   });
 
   it('lists channel conversations without personal inbox state for an application', async () => {

@@ -451,17 +451,14 @@ describe('buildAllFlatEntityOperationRecordByMetadataNameFromFromTo', () => {
     ).toBeDefined();
   });
 
-  it('does not delete a channel an application created at runtime', () => {
-    const result = inferDeletionOf(withAgentChatChannel(AGENT_CHAT_CHANNEL));
-
-    expect(result.agentChatChannel?.flatEntityToDelete).toBeUndefined();
-  });
-
-  it('does not delete the role access an application gave its channel at runtime', () => {
-    const result = inferDeletionOf(
-      withAgentChatChannelRole(AGENT_CHAT_CHANNEL_ROLE),
+  it('preserves channels and role access created at runtime when syncing a manifest', () => {
+    const result = inferDeletionOf((maps) =>
+      withAgentChatChannelRole(AGENT_CHAT_CHANNEL_ROLE)(
+        withAgentChatChannel(AGENT_CHAT_CHANNEL)(maps),
+      ),
     );
 
+    expect(result.agentChatChannel?.flatEntityToDelete).toBeUndefined();
     expect(result.agentChatChannelRole?.flatEntityToDelete).toBeUndefined();
   });
 
