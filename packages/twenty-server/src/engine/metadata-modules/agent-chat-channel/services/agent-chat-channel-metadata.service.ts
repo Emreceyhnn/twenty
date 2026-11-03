@@ -30,7 +30,6 @@ import { type FlatEntityToCreateDeleteUpdate } from 'src/engine/metadata-modules
 import { findFlatEntityByUniversalIdentifier } from 'src/engine/metadata-modules/flat-entity/utils/find-flat-entity-by-universal-identifier.util';
 import { findManyFlatEntityByIdInFlatEntityMaps } from 'src/engine/metadata-modules/flat-entity/utils/find-many-flat-entity-by-id-in-flat-entity-maps.util';
 import { type FlatNavigationMenuItem } from 'src/engine/metadata-modules/flat-navigation-menu-item/types/flat-navigation-menu-item.type';
-import { RoleEntity } from 'src/engine/metadata-modules/role/role.entity';
 import { WorkspaceMigrationBuilderException } from 'src/engine/workspace-manager/workspace-migration/exceptions/workspace-migration-builder-exception';
 import { WorkspaceMigrationValidateBuildAndRunService } from 'src/engine/workspace-manager/workspace-migration/services/workspace-migration-validate-build-and-run-service';
 
@@ -331,26 +330,6 @@ export class AgentChatChannelMetadataService {
           channelIds,
           mode: 'exclusive',
         });
-
-        const applicationRolesQuery = manager
-          .getRepository(RoleEntity)
-          .createQueryBuilder('application_role')
-          .select('application_role.id')
-          .where('application_role.workspaceId = :workspaceId', {
-            workspaceId,
-          })
-          .andWhere('application_role.applicationId = :applicationId', {
-            applicationId,
-          });
-
-        await manager
-          .getRepository(AgentChatChannelRoleEntity)
-          .createQueryBuilder()
-          .delete()
-          .where({ workspaceId, channelId: In(channelIds) })
-          .andWhere(`"roleId" IN (${applicationRolesQuery.getQuery()})`)
-          .setParameters(applicationRolesQuery.getParameters())
-          .execute();
 
         await manager.update(
           AgentChatChannelRoleEntity,
