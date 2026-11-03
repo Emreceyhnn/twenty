@@ -1,4 +1,7 @@
 import { Injectable } from '@nestjs/common';
+import { InjectDataSource } from '@nestjs/typeorm';
+
+import { DataSource } from 'typeorm';
 
 import { isDefined, isNonEmptyArray } from 'twenty-shared/utils';
 
@@ -51,6 +54,8 @@ export class AgentChatChannelService {
     private readonly threadRecordEventService: AgentChatThreadRecordEventService,
     private readonly workspaceCacheService: WorkspaceCacheService,
     private readonly postgresAdvisoryLockService: PostgresAdvisoryLockService,
+    @InjectDataSource()
+    private readonly coreDataSource: DataSource,
   ) {}
 
   async findChannels({
@@ -271,73 +276,72 @@ export class AgentChatChannelService {
       after: AgentChatThreadWorkspaceEntity;
     }[]
   > {
-    return this.threadRepository.query(workspaceId, async ({ manager }) => {
-      const doesSourceChannelExist = await manager
+    const [doesSourceChannelExist, threadsBefore] = await Promise.all([
+      this.coreDataSource
         .getRepository(AgentChatChannelEntity)
-        .existsBy({ id: channelId, workspaceId });
+        .existsBy({ id: channelId, workspaceId }),
+      this.threadRepository.find(workspaceId, { where: { channelId } }),
+    ]);
 
-      if (!doesSourceChannelExist) {
-        throwAgentChatChannelNotFound();
-      }
+    if (!doesSourceChannelExist) {
+      throwAgentChatChannelNotFound();
+    }
 
-      const threadTable = `${getWorkspaceSchemaName(workspaceId)}.agentChatThread`;
-      const threadsBefore = await manager
-        .createQueryBuilder()
-        .select('thread.*')
-        .from(threadTable, 'thread')
-        .where('thread."channelId" = :channelId', { channelId })
-        .getRawMany<AgentChatThreadWorkspaceEntity>();
+    if (!isNonEmptyArray(threadsBefore)) {
+      return [];
+    }
 
-      if (!isNonEmptyArray(threadsBefore)) {
-        return [];
-      }
-
-      if (!isDefined(destinationChannelId)) {
-        throw new AiException(
-          'The channel still has chats',
-          AiExceptionCode.CHAT_CHANNEL_NOT_EMPTY,
-        );
-      }
-
-      await lockAgentChatChannelForThreadWriteOrThrow({
-        manager,
-        workspaceId,
-        channelId: destinationChannelId,
-      });
-
-      const movedThreads = await manager
-        .createQueryBuilder()
-        .update<AgentChatThreadWorkspaceEntity>(threadTable)
-        .set({
-          channelId: destinationChannelId,
-          updatedAt: () => 'CURRENT_TIMESTAMP',
-        })
-        .where('id = ANY(:threadIds::uuid[])', {
-          threadIds: threadsBefore.map(({ id }) => id),
-        })
-        .andWhere('"channelId" = :sourceChannelId', {
-          sourceChannelId: channelId,
-        })
-        .returning('*')
-        .execute();
-      const threadsAfter: AgentChatThreadWorkspaceEntity[] = movedThreads.raw;
-
-      await this.channelGrantService.rewriteThreadGrantsInTransaction({
-        manager,
-        workspaceId,
-        threadIds: threadsAfter.map(({ id }) => id),
-        affectedChannelIds: [channelId, destinationChannelId],
-      });
-
-      const threadBeforeById = new Map(
-        threadsBefore.map((thread) => [thread.id, thread]),
+    if (!isDefined(destinationChannelId)) {
+      throw new AiException(
+        'The channel still has chats',
+        AiExceptionCode.CHAT_CHANNEL_NOT_EMPTY,
       );
+    }
 
-      return threadsAfter.flatMap((after) => {
-        const before = threadBeforeById.get(after.id);
+    const threadTable = `${getWorkspaceSchemaName(workspaceId)}.agentChatThread`;
+    const threadsAfter = await this.coreDataSource.transaction(
+      async (manager) => {
+        await lockAgentChatChannelForThreadWriteOrThrow({
+          manager,
+          workspaceId,
+          channelId: destinationChannelId,
+        });
 
-        return isDefined(before) ? [{ before, after }] : [];
-      });
+        const movedThreads = await manager
+          .createQueryBuilder()
+          .update<AgentChatThreadWorkspaceEntity>(threadTable)
+          .set({
+            channelId: destinationChannelId,
+            updatedAt: () => 'CURRENT_TIMESTAMP',
+          })
+          .where('id = ANY(:threadIds::uuid[])', {
+            threadIds: threadsBefore.map(({ id }) => id),
+          })
+          .andWhere('"channelId" = :sourceChannelId', {
+            sourceChannelId: channelId,
+          })
+          .returning('*')
+          .execute();
+        const threadsAfter: AgentChatThreadWorkspaceEntity[] = movedThreads.raw;
+
+        await this.channelGrantService.rewriteThreadGrantsInTransaction({
+          manager,
+          workspaceId,
+          threadIds: threadsAfter.map(({ id }) => id),
+          affectedChannelIds: [channelId, destinationChannelId],
+        });
+
+        return threadsAfter;
+      },
+    );
+    const threadBeforeById = new Map(
+      threadsBefore.map((thread) => [thread.id, thread]),
+    );
+
+    return threadsAfter.flatMap((after) => {
+      const before = threadBeforeById.get(after.id);
+
+      return isDefined(before) ? [{ before, after }] : [];
     });
   }
 }

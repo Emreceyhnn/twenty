@@ -346,6 +346,7 @@ const watchThreadEvents = () => {
   );
 
   return {
+    eventSpy,
     hasEmittedThreadEvent: (threadId: string) =>
       eventSpy.mock.calls.some(
         ([batchEvent]) =>
@@ -1438,7 +1439,7 @@ describe('Chat channels through the authenticated API', () => {
 
     expect(selfResponse.body.errors[0].extensions.code).toBe('BAD_USER_INPUT');
 
-    const { hasEmittedThreadEvent } = watchThreadEvents();
+    const { eventSpy } = watchThreadEvents();
 
     assertGraphQLSuccessfulResponse(
       await makeMetadataApiRequest({
@@ -1455,7 +1456,20 @@ describe('Chat channels through the authenticated API', () => {
     ]);
     expect((await listChannels()).map(({ id }) => id)).not.toContain(channelId);
     // Moved in SQL, so the move is sent for clients watching the chat
-    expect(hasEmittedThreadEvent(threadId)).toBe(true);
+    const emittedEvent = eventSpy.mock.calls
+      .flatMap(([batchEvent]) =>
+        batchEvent?.objectMetadataNameSingular === 'agentChatThread'
+          ? batchEvent.events
+          : [],
+      )
+      .find((event) => 'recordId' in event && event.recordId === threadId);
+
+    expect(emittedEvent).toMatchObject({
+      properties: {
+        updatedFields: ['channelId'],
+        diff: { channelId: { before: channelId, after: destinationChannelId } },
+      },
+    });
   });
 
   it('keeps a conversation moved out while its former channel is being deleted', async () => {

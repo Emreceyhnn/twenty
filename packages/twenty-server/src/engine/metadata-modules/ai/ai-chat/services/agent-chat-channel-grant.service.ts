@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
+import { InjectDataSource } from '@nestjs/typeorm';
 
 import { isNonEmptyArray } from 'twenty-shared/utils';
-import { type EntityManager } from 'typeorm';
+import { DataSource, type EntityManager } from 'typeorm';
 
 import { InjectMessageQueue } from 'src/engine/core-modules/message-queue/decorators/message-queue.decorator';
 import { MessageQueue } from 'src/engine/core-modules/message-queue/message-queue.constants';
@@ -13,16 +14,13 @@ import { type RewriteAgentChatChannelGrantsJobData } from 'src/engine/metadata-m
 import { acquireAgentChatChannelGrantLocksForThreadWriteOrThrow } from 'src/engine/metadata-modules/ai/ai-chat/utils/acquire-agent-chat-channel-grant-locks-for-thread-write-or-throw.util';
 import { acquireAgentChatChannelGrantLocks } from 'src/engine/metadata-modules/ai/ai-chat/utils/acquire-agent-chat-channel-grant-locks.util';
 import { replaceAgentChatChannelRuleGrants } from 'src/engine/metadata-modules/ai/ai-chat/utils/replace-agent-chat-channel-rule-grants.util';
-import { AgentHistoryRepository } from 'src/engine/metadata-modules/ai/ai-history/repositories/agent-history-repository';
-import { InjectAgentHistoryRepository } from 'src/engine/metadata-modules/ai/ai-history/repositories/inject-agent-history-repository.decorator';
-import { AgentChatThreadWorkspaceEntity } from 'src/engine/metadata-modules/ai/ai-history/standard-objects/agent-chat-thread.workspace-entity';
 
 // A chat's only RULE grants, so each rewrite owns every RULE grant in its scope
 @Injectable()
 export class AgentChatChannelGrantService {
   constructor(
-    @InjectAgentHistoryRepository('agentChatThread')
-    private readonly threadRepository: AgentHistoryRepository<AgentChatThreadWorkspaceEntity>,
+    @InjectDataSource()
+    private readonly coreDataSource: DataSource,
     @InjectMessageQueue(MessageQueue.workspaceQueue)
     private readonly workspaceQueueService: MessageQueueService,
   ) {}
@@ -76,7 +74,7 @@ export class AgentChatChannelGrantService {
     workspaceId: string;
     channelId: string;
   }): Promise<void> {
-    await this.threadRepository.query(workspaceId, async ({ manager }) => {
+    await this.coreDataSource.transaction(async (manager) => {
       await acquireAgentChatChannelGrantLocks({
         manager,
         workspaceId,
@@ -97,15 +95,13 @@ export class AgentChatChannelGrantService {
   }: {
     workspaceId: string;
   }): Promise<void> {
-    const channels = await this.threadRepository.query(
-      workspaceId,
-      ({ manager }) =>
-        manager.getRepository(AgentChatChannelEntity).find({
-          select: { id: true },
-          where: { workspaceId },
-          order: { id: 'ASC' },
-        }),
-    );
+    const channels = await this.coreDataSource
+      .getRepository(AgentChatChannelEntity)
+      .find({
+        select: { id: true },
+        where: { workspaceId },
+        order: { id: 'ASC' },
+      });
 
     for (const { id: channelId } of channels) {
       await this.rewriteChannelGrants({ workspaceId, channelId });

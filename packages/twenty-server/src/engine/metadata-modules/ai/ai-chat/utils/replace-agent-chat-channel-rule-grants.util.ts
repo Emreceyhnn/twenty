@@ -76,7 +76,6 @@ export const replaceAgentChatChannelRuleGrants = async ({
     .andWhere(
       '(workspace_role."canAccessAllAgentChatChannels" = true OR channel_role.id IS NOT NULL)',
     )
-    .andWhere('thread."channelId" IS NOT NULL')
     .setParameters({
       workspaceId,
       threadObjectUniversalIdentifier:
